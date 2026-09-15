@@ -1,0 +1,26 @@
+{
+  "name": "cp-trie-visualizer-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scala:fast": "cd ../.. && sbt visualizer/fastLinkJS",
+    "scala:full": "cd ../.. && sbt visualizer/fullLinkJS",
+    "dev": "npm run scala:fast && vite",
+    "build": "npm run scala:full && tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:integration": "npm run scala:fast && node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "cytoscape": "^3.34.1",
+    "monaco-editor": "^0.56.0"
+  },
+  "overrides": {
+    "dompurify": "3.4.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.9",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}

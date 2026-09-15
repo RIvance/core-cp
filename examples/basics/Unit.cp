@@ -1,0 +1,3 @@
+// expected: ()
+
+def main: Unit = ();
