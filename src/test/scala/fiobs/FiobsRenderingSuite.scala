@@ -1,6 +1,7 @@
 package cp.fiobs
 
 import cp.naming.Namespace
+import cp.primitive.PrimitiveValue
 
 class FiobsRenderingSuite extends munit.FunSuite {
   test("render elaborated de Bruijn binders with readable scoped names") {
@@ -17,7 +18,7 @@ class FiobsRenderingSuite extends munit.FunSuite {
       Type.Integer,
       Term.Annotation(
         Term.If(
-          Term.Literal(cp.primitive.PrimitiveValue.Boolean(true)),
+          Term.Literal(PrimitiveValue.Boolean(true)),
           Term.Record("value", Term.Global(main)),
           Term.Record("value", Term.Top)
         ),

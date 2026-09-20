@@ -22,45 +22,6 @@ enum Expr {
   case If(condition: Expr, whenTrue: Expr, whenFalse: Expr)
 
   def toTerm: Result[Term, elaboration.ElaborationError] = elaboration.Elaborator.elaborate(this)
-
-  def substituteFreeTermVariables(replacements: Map[String, Expr]): Expr = this match {
-    case Variable(name) => replacements.getOrElse(name, this)
-    case Global(_) | Literal(_) | Top => this
-    case Lambda(parameter, body) =>
-      Lambda(parameter, body.substituteFreeTermVariables(replacements - parameter))
-    case Fix(name, annotatedType, body) =>
-      Fix(name, annotatedType, body.substituteFreeTermVariables(replacements - name))
-    case Application(function, argument) =>
-      Application(
-        function.substituteFreeTermVariables(replacements),
-        argument.substituteFreeTermVariables(replacements)
-      )
-    case Merge(left, right) =>
-      Merge(
-        left.substituteFreeTermVariables(replacements),
-        right.substituteFreeTermVariables(replacements)
-      )
-    case Annotation(expression, annotatedType) =>
-      Annotation(expression.substituteFreeTermVariables(replacements), annotatedType)
-    case TypeLambda(typeParameter, disjointBound, body) =>
-      TypeLambda(typeParameter, disjointBound, body.substituteFreeTermVariables(replacements))
-    case TypeApplication(function, argumentType) =>
-      TypeApplication(function.substituteFreeTermVariables(replacements), argumentType)
-    case Record(label, field) => Record(label, field.substituteFreeTermVariables(replacements))
-    case Projection(record, label) => Projection(record.substituteFreeTermVariables(replacements), label)
-    case Binary(operator, left, right) =>
-      Binary(
-        operator,
-        left.substituteFreeTermVariables(replacements),
-        right.substituteFreeTermVariables(replacements)
-      )
-    case If(condition, whenTrue, whenFalse) =>
-      If(
-        condition.substituteFreeTermVariables(replacements),
-        whenTrue.substituteFreeTermVariables(replacements),
-        whenFalse.substituteFreeTermVariables(replacements)
-      )
-  }
 }
 
 enum Term {
@@ -79,6 +40,24 @@ enum Term {
   case Projection(record: Term, label: String)
   case Binary(operator: BinaryOperator, left: Term, right: Term)
   case If(condition: Term, whenTrue: Term, whenFalse: Term)
+
+  /** Module dependencies after all lexical bindings and implicit opens have been resolved. */
+  def referencedGlobals: Set[Identifier] = this match {
+    case Global(identifier) => Set(identifier)
+    case Variable(_) | Literal(_) | Top => Set.empty
+    case Lambda(body) => body.referencedGlobals
+    case Fix(_, body) => body.referencedGlobals
+    case Application(function, argument) => function.referencedGlobals ++ argument.referencedGlobals
+    case Merge(left, right) => left.referencedGlobals ++ right.referencedGlobals
+    case Annotation(term, _) => term.referencedGlobals
+    case TypeLambda(_, body) => body.referencedGlobals
+    case TypeApplication(function, _) => function.referencedGlobals
+    case Record(_, field) => field.referencedGlobals
+    case Projection(record, _) => record.referencedGlobals
+    case Binary(_, left, right) => left.referencedGlobals ++ right.referencedGlobals
+    case If(condition, whenTrue, whenFalse) =>
+      condition.referencedGlobals ++ whenTrue.referencedGlobals ++ whenFalse.referencedGlobals
+  }
 
   def render(maximumLineWidth: Int = 88): String = {
     FiobsRendering.render(this, maximumLineWidth)

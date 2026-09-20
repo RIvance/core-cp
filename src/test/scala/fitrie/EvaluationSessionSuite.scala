@@ -2,7 +2,7 @@ package cp.fitrie
 
 import cp.fitrie.evaluation.*
 import cp.naming.Namespace
-import cp.primitive.{BinaryOperator, PrimitiveValue}
+import cp.primitive.{BinaryOperator, PrimitiveType, PrimitiveValue}
 import cp.util.Result
 
 class EvaluationSessionSuite extends munit.FunSuite {
@@ -31,7 +31,7 @@ class EvaluationSessionSuite extends munit.FunSuite {
     assertEquals(
       rootNode(next.snapshot).terminations,
       Vector(EvaluationTermination(
-        cp.primitive.PrimitiveType.Integer,
+        PrimitiveType.Integer,
         PrimitiveValue.Integer(42)
       ))
     )
@@ -78,7 +78,7 @@ class EvaluationSessionSuite extends munit.FunSuite {
     val filtering = FiTrie.response(ResponseComputation.Filter(
       indexing,
       RootKeyExpression.concrete(RootKeySet.one(
-        RootKey.Termination(cp.primitive.PrimitiveType.Integer)
+        RootKey.Termination(PrimitiveType.Integer)
       ))
     ))
     val initial = expectSuccess(Evaluation.start(filtering))

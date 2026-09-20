@@ -3,14 +3,20 @@ package cp.fiobs
 import cp.fiobs.elaboration.{ElaborationError, Elaborator}
 import cp.fiobs.eval.LazyEvaluation
 import cp.fiobs.runtime.{EvaluationError, RuntimeTerm, Value}
-import cp.fiobs.typing.{TypeChecker, TypeError, TypedTerm}
+import cp.fiobs.typing.{TypeChecker, TypeError, TypingContext}
 import cp.naming.Identifier
 import cp.util.Result
 
-final case class CompiledProgram(
-  sourceTerm: Term,
-  runtimeTerm: RuntimeTerm,
-  programType: Type
+/**
+ * A checked source term and its decoration under the recorded global typing context.
+ * Only the Fiobs checking boundary constructs this artifact; evaluation and target
+ * compilation reuse the same checked result.
+ */
+final class CheckedProgram private[fiobs] (
+  val sourceTerm: Term,
+  val runtimeTerm: RuntimeTerm,
+  val programType: Type,
+  val globalTypes: Map[Identifier, Type]
 )
 
 enum CompilationError {
@@ -23,48 +29,50 @@ enum ProgramError {
   case Evaluation(error: EvaluationError)
 }
 
-/** Public boundary from named expressions to checked and decorated Fiobs programs. */
+/** Public boundary from named expressions or resolved terms to checked Fiobs programs. */
 object Fiobs {
+  def infer(term: Term, globalTypes: Map[Identifier, Type] = Map.empty): Result[CheckedProgram, TypeError] = {
+    TypeChecker(TypingContext.withGlobals(globalTypes)).infer(term).map { typed =>
+      new CheckedProgram(term, typed.runtimeTerm, typed.inferredType, globalTypes)
+    }
+  }
+
+  def check(
+    term: Term,
+    expectedType: Type,
+    globalTypes: Map[Identifier, Type] = Map.empty
+  ): Result[CheckedProgram, TypeError] = {
+    TypeChecker(TypingContext.withGlobals(globalTypes)).check(term, expectedType).map { runtimeTerm =>
+      new CheckedProgram(term, runtimeTerm, expectedType, globalTypes)
+    }
+  }
+
   def compile(
     expression: Expr,
     globalTypes: Map[Identifier, Type] = Map.empty
-  ): Result[CompiledProgram, CompilationError] = {
+  ): Result[CheckedProgram, CompilationError] = {
     Elaborator.elaborate(expression)
       .mapError(CompilationError.Elaboration(_))
-      .flatMap { sourceTerm =>
-        TypeChecker(cp.fiobs.typing.TypingContext.withGlobals(globalTypes)).infer(sourceTerm)
-          .mapError(CompilationError.Typing(_))
-          .map(typedTerm => compiled(sourceTerm, typedTerm))
-      }
+      .flatMap(infer(_, globalTypes).mapError(CompilationError.Typing(_)))
   }
 
   def compileChecking(
     expression: Expr,
     expectedType: SurfaceType,
     globalTypes: Map[Identifier, Type] = Map.empty
-  ): Result[CompiledProgram, CompilationError] = {
-    Elaborator.elaborate(expression)
-      .mapError(CompilationError.Elaboration(_))
-      .flatMap { sourceTerm =>
-        Elaborator.elaborateType(expectedType)
-          .mapError(CompilationError.Elaboration(_))
-          .flatMap { coreExpectedType =>
-            TypeChecker(cp.fiobs.typing.TypingContext.withGlobals(globalTypes)).check(sourceTerm, coreExpectedType)
-              .mapError(CompilationError.Typing(_))
-              .map(runtimeTerm => CompiledProgram(sourceTerm, runtimeTerm, coreExpectedType))
-          }
-      }
+  ): Result[CheckedProgram, CompilationError] = {
+    for {
+      term <- Elaborator.elaborate(expression).mapError(CompilationError.Elaboration(_))
+      inputType <- Elaborator.elaborateType(expectedType).mapError(CompilationError.Elaboration(_))
+      checked <- check(term, inputType, globalTypes).mapError(CompilationError.Typing(_))
+    } yield checked
   }
 
   def evaluate(expression: Expr): Result[Value, ProgramError] = {
     compile(expression)
       .mapError(ProgramError.Compilation(_))
       .flatMap { program =>
-        LazyEvaluation.evaluate(program.runtimeTerm)
-          .mapError(ProgramError.Evaluation(_))
+        LazyEvaluation.evaluate(program.runtimeTerm).mapError(ProgramError.Evaluation(_))
       }
   }
-
-  private def compiled(sourceTerm: Term, typedTerm: TypedTerm): CompiledProgram =
-    CompiledProgram(sourceTerm, typedTerm.runtimeTerm, typedTerm.inferredType)
 }

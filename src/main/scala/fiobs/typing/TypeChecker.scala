@@ -3,10 +3,20 @@ package cp.fiobs.typing
 import cp.fiobs.*
 import cp.fiobs.runtime.RuntimeTerm
 import cp.naming.Identifier
-import cp.primitive.BinaryOperator
+import cp.primitive.{BinaryOperator, PrimitiveSignature}
 import cp.util.Result
 
 final case class TypedTerm(runtimeTerm: RuntimeTerm, inferredType: Type)
+
+enum PrimitiveOperand {
+  case Left, Right
+}
+
+final case class PrimitiveCandidateFailure(
+  signature: PrimitiveSignature,
+  operand: PrimitiveOperand,
+  cause: TypeError
+)
 
 enum TypeError {
   case UnboundTermVariable(index: Int)
@@ -19,7 +29,7 @@ enum TypeError {
   case TypesAreNotDisjoint(leftType: Type, rightType: Type)
   case TypeArgumentViolatesBound(argumentType: Type, disjointBound: Type)
   case TypeLambdaBoundMismatch(actualBound: Type, expectedBound: Type)
-  case NoPrimitiveSignature(operator: BinaryOperator, term: Term)
+  case NoPrimitiveSignature(operator: BinaryOperator, term: Term, candidates: List[PrimitiveCandidateFailure])
 }
 
 final case class TypingContext(
@@ -300,19 +310,27 @@ final class TypeChecker private (context: TypingContext) {
     left: Term,
     right: Term
   ): Result[TypedTerm, TypeError] = {
-    val successfulSignature = operator.signatures.iterator.map { signature =>
-      val leftArgumentType = Type.Primitive(signature.leftArgument)
-      val rightArgumentType = Type.Primitive(signature.rightArgument)
-      for {
-        runtimeLeft <- check(left, leftArgumentType)
-        runtimeRight <- check(right, rightArgumentType)
-      } yield TypedTerm(
-        RuntimeTerm.Binary(operator, runtimeLeft, runtimeRight),
-        Type.Primitive(signature.result)
-      )
-    }.collectFirst { case success @ Result.Ok(_) => success }
-
-    successfulSignature.getOrElse(Result.Err(TypeError.NoPrimitiveSignature(operator, completeTerm)))
+    def select(
+      signatures: List[PrimitiveSignature],
+      failures: List[PrimitiveCandidateFailure]
+    ): Result[TypedTerm, TypeError] = signatures match {
+      case Nil => Result.Err(TypeError.NoPrimitiveSignature(operator, completeTerm, failures.reverse))
+      case signature :: remaining =>
+        val candidate = for {
+          runtimeLeft <- check(left, Type.Primitive(signature.leftArgument))
+            .mapError(PrimitiveCandidateFailure(signature, PrimitiveOperand.Left, _))
+          runtimeRight <- check(right, Type.Primitive(signature.rightArgument))
+            .mapError(PrimitiveCandidateFailure(signature, PrimitiveOperand.Right, _))
+        } yield TypedTerm(
+          RuntimeTerm.Binary(operator, runtimeLeft, runtimeRight),
+          Type.Primitive(signature.result)
+        )
+        candidate match {
+          case Result.Ok(typed) => Result.Ok(typed)
+          case Result.Err(failure) => select(remaining, failure :: failures)
+        }
+    }
+    select(operator.signatures, Nil)
   }
 }
 

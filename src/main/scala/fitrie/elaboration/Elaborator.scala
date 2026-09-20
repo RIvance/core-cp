@@ -2,7 +2,7 @@ package cp.fitrie.elaboration
 
 import cp.fiobs.*
 import cp.fiobs.runtime.RuntimeTerm
-import cp.fiobs.typing.{TypeChecker, TypeError, TypingContext}
+import cp.fiobs.typing.TypeError
 import cp.fitrie.*
 import cp.naming.{FieldLabel, Identifier}
 import cp.primitive.BinaryOperator
@@ -33,14 +33,7 @@ object Elaborator {
     term: Term,
     globalTypes: Map[Identifier, Type] = Map.empty
   ): Result[TypedFiTrie, FiTrieElaborationError] = {
-    val typingContext = TypingContext.withGlobals(globalTypes)
-    TypeChecker(typingContext).infer(term)
-      .mapError(FiTrieElaborationError.Typing(_))
-      .flatMap { typedTerm =>
-        translate(typedTerm.runtimeTerm, TranslationContext.withGlobals(globalTypes)).flatMap { translated =>
-          requireType(translated, typedTerm.inferredType, typedTerm.runtimeTerm)
-        }
-      }
+    Fiobs.infer(term, globalTypes).mapError(FiTrieElaborationError.Typing(_)).flatMap(lower)
   }
 
   def check(
@@ -48,14 +41,13 @@ object Elaborator {
     expectedType: Type,
     globalTypes: Map[Identifier, Type] = Map.empty
   ): Result[TypedFiTrie, FiTrieElaborationError] = {
-    val typingContext = TypingContext.withGlobals(globalTypes)
-    TypeChecker(typingContext).check(term, expectedType)
-      .mapError(FiTrieElaborationError.Typing(_))
-      .flatMap { runtimeTerm =>
-        translate(runtimeTerm, TranslationContext.withGlobals(globalTypes)).flatMap { translated =>
-          requireType(translated, expectedType, runtimeTerm)
-        }
-      }
+    Fiobs.check(term, expectedType, globalTypes).mapError(FiTrieElaborationError.Typing(_)).flatMap(lower)
+  }
+
+  def lower(program: CheckedProgram): Result[TypedFiTrie, FiTrieElaborationError] = {
+    translate(program.runtimeTerm, TranslationContext.withGlobals(program.globalTypes)).flatMap { translated =>
+      requireType(translated, program.programType, program.runtimeTerm)
+    }
   }
 
   private def translate(

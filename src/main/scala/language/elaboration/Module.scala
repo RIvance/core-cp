@@ -1,48 +1,11 @@
 package cp.language.elaboration
 
-import cp.fiobs.{Expr as FiobsExpression, SurfaceType}
-import cp.language.core.Type
+import cp.fiobs.Term
+import cp.language.typing.Type
 import cp.naming.{Identifier, Namespace}
-import cp.util.Result
 
-enum TermBindingRecursion {
-  case Ordinary, Recursive
-}
-
-/** A local binding used while CP constructs are lowered to Fiobs expressions. */
-final case class ElaboratedTermBinding(
-  name: String,
-  initializer: FiobsExpression,
-  bindingType: Type,
-  recursion: TermBindingRecursion
-) {
-  def scopeOver(
-    body: ElaboratedExpression
-  ): Result[ElaboratedExpression, CpElaborationError] = {
-    for {
-      translatedBindingType <- TypeTranslation.toSurfaceType(bindingType)
-        .mapError(CpElaborationError.TypeTranslation(_))
-      translatedBodyType <- TypeTranslation.toSurfaceType(body.inferredType)
-        .mapError(CpElaborationError.TypeTranslation(_))
-    } yield {
-      val bindingInitializer = recursion match {
-        case TermBindingRecursion.Ordinary => initializer
-        case TermBindingRecursion.Recursive =>
-          FiobsExpression.Fix(name, translatedBindingType, initializer)
-      }
-      ElaboratedExpression(
-        FiobsExpression.Application(
-          FiobsExpression.Annotation(
-            FiobsExpression.Lambda(name, body.expression),
-            SurfaceType.Arrow(translatedBindingType, translatedBodyType)
-          ),
-          bindingInitializer
-        ),
-        body.inferredType
-      )
-    }
-  }
-}
+/** The resolved Fiobs expression synthesizes the translation of inferredType in its lexical context. */
+final case class ElaboratedExpression(expression: Term, inferredType: Type)
 
 enum ModuleDefinitionVisibility {
   case Exported, Internal
@@ -50,7 +13,7 @@ enum ModuleDefinitionVisibility {
 
 final case class ElaboratedTermDefinition(
   identifier: Identifier,
-  initializer: FiobsExpression,
+  initializer: Term,
   definitionType: Type,
   visibility: ModuleDefinitionVisibility
 )

@@ -26,7 +26,7 @@ class CpParserSuite extends munit.FunSuite {
             ),
             List(Declaration.Term(
               "main",
-              Expression.Variable(NameReference.Qualified(reference))
+              Expression.Variable(NameReference.Qualified(reference)), None
             ))
           )) =>
         assertEquals(namespace, Namespace("A", "B"))
@@ -48,7 +48,7 @@ class CpParserSuite extends munit.FunSuite {
             _,
             List(Declaration.Term(
               "main",
-              Expression.Variable(NameReference.Qualified(identifier))
+              Expression.Variable(NameReference.Qualified(identifier)), None
             ))
           )) => assertEquals(identifier, Identifier(Namespace("C"), "value"))
       case other => fail(s"unexpected parse result: $other")
@@ -142,9 +142,9 @@ class CpParserSuite extends munit.FunSuite {
 
     CpParser.parseModule(source) match {
       case Result.Ok(Module(_, _, List(
-            Declaration.Term("first", _),
-            Declaration.Term("second", _),
-            Declaration.Term("main", _)
+            Declaration.Term("first", _, None),
+            Declaration.Term("second", _, None),
+            Declaration.Term("main", _, None)
           ))) => ()
       case other => fail(s"unexpected parse result: $other")
     }
@@ -192,24 +192,22 @@ class CpParserSuite extends munit.FunSuite {
       case Result.Ok(Module(_, _,
             Declaration.Term(
               "maximum",
-              Expression.Annotation(
+              Expression.Lambda(
+                ValueParameter("left", TypeSyntax.Integer),
                 Expression.Lambda(
-                  ValueParameter("left", Type.Integer),
-                  Expression.Lambda(
-                    ValueParameter("right", Type.Integer),
-                    Expression.If(
-                      Expression.Binary(
-                        BinaryOperator.GreaterThan,
-                        Expression.Variable(NameReference.Unqualified("left")),
-                        Expression.Variable(NameReference.Unqualified("right"))
-                      ),
+                  ValueParameter("right", TypeSyntax.Integer),
+                  Expression.If(
+                    Expression.Binary(
+                      BinaryOperator.GreaterThan,
                       Expression.Variable(NameReference.Unqualified("left")),
                       Expression.Variable(NameReference.Unqualified("right"))
-                    )
+                    ),
+                    Expression.Variable(NameReference.Unqualified("left")),
+                    Expression.Variable(NameReference.Unqualified("right"))
                   )
-                ),
-                Type.Arrow(Type.Integer, Type.Arrow(Type.Integer, Type.Integer))
-              )
+                )
+              ),
+              Some(TypeSyntax.Arrow(TypeSyntax.Integer, TypeSyntax.Arrow(TypeSyntax.Integer, TypeSyntax.Integer)))
             ) :: Declaration.Term(
               "main",
               Expression.Application(
@@ -218,7 +216,7 @@ class CpParserSuite extends munit.FunSuite {
                   Expression.Literal(PrimitiveValue.Integer(1))
                 ),
                 Expression.Literal(PrimitiveValue.Integer(2))
-              )
+              ), None
             ) :: Nil
           )) => ()
       case other => fail(s"unexpected parse result: $other")
@@ -239,27 +237,25 @@ class CpParserSuite extends munit.FunSuite {
       case Result.Ok(Module(_, _,
             Declaration.Term(
               "area",
-              Expression.Annotation(
-                Expression.Lambda(
-                  ValueParameter("d", Type.Decimal),
-                  Expression.Let(
-                    "half",
-                    Some(Type.Decimal),
-                    Expression.Binary(
-                      BinaryOperator.Divide,
-                      Expression.Variable(NameReference.Unqualified("d")),
-                      Expression.Literal(PrimitiveValue.Decimal(two))
-                    ),
-                    Expression.Binary(
-                      BinaryOperator.Multiply,
-                      Expression.Variable(NameReference.Unqualified("half")),
-                      Expression.Variable(NameReference.Unqualified("half"))
-                    )
+              Expression.Lambda(
+                ValueParameter("d", TypeSyntax.Decimal),
+                Expression.Let(
+                  "half",
+                  Some(TypeSyntax.Decimal),
+                  Expression.Binary(
+                    BinaryOperator.Divide,
+                    Expression.Variable(NameReference.Unqualified("d")),
+                    Expression.Literal(PrimitiveValue.Decimal(two))
+                  ),
+                  Expression.Binary(
+                    BinaryOperator.Multiply,
+                    Expression.Variable(NameReference.Unqualified("half")),
+                    Expression.Variable(NameReference.Unqualified("half"))
                   )
-                ),
-                Type.Arrow(Type.Decimal, Type.Decimal)
-              )
-            ) :: Declaration.Term("main", _) :: Nil
+                )
+              ),
+              Some(TypeSyntax.Arrow(TypeSyntax.Decimal, TypeSyntax.Decimal))
+            ) :: Declaration.Term("main", _, None) :: Nil
           )) if two == BigDecimal("2.0") => ()
       case other => fail(s"unexpected parse result: $other")
     }
@@ -270,7 +266,7 @@ class CpParserSuite extends munit.FunSuite {
       parseMainInitializer("let rec loop: Int = loop in loop"),
       Result.Ok(Expression.RecursiveLet(
         "loop",
-        Type.Integer,
+        TypeSyntax.Integer,
         Expression.variable("loop"),
         Expression.variable("loop")
       ))
@@ -306,26 +302,24 @@ class CpParserSuite extends munit.FunSuite {
 
     CpParser.parseModule(source) match {
       case Result.Ok(Module(_, _,
-            Declaration.TypeSignature("ExpSig", List("Exp"), Type.Top, _) ::
+            Declaration.TypeSignature("ExpSig", List("Exp"), TypeSyntax.Top, _) ::
             Declaration.Term(
               "consume",
-              Expression.Annotation(
-                Expression.Lambda(
-                  ValueParameter(
-                    "value",
-                    Type.SignatureApplication(
-                      NameReference.Unqualified("ExpSig"),
-                      List(SortArgument.Dependency(
-                        Type.Variable("Eval"),
-                        Type.Variable("Print")
-                      ))
-                    )
-                  ),
-                  Expression.Top
+              Expression.Lambda(
+                ValueParameter(
+                  "value",
+                  TypeSyntax.SignatureApplication(
+                    NameReference.Unqualified("ExpSig"),
+                    List(SortArgument.Dependency(
+                      TypeSyntax.Reference(NameReference.Unqualified("Eval")),
+                      TypeSyntax.Reference(NameReference.Unqualified("Print"))
+                    ))
+                  )
                 ),
-                _
-              )
-            ) :: Declaration.Term("main", Expression.Top) :: Nil
+                Expression.Top
+              ),
+              Some(_)
+            ) :: Declaration.Term("main", Expression.Top, None) :: Nil
           )) => ()
       case other => fail(s"unexpected parse result: $other")
     }
@@ -335,7 +329,9 @@ class CpParserSuite extends munit.FunSuite {
     val square = parseMainInitializer("function[Argument]")
     val established = parseMainInitializer("function @Argument")
 
-    val expected = Expression.TypeApplication(Expression.variable("function"), Type.Variable("Argument"))
+    val expected = Expression.TypeApplication(
+      Expression.variable("function"), TypeSyntax.Reference(NameReference.Unqualified("Argument"))
+    )
     assertEquals(square, Result.Ok(expected))
     assertEquals(established, Result.Ok(expected))
   }
@@ -353,6 +349,41 @@ class CpParserSuite extends munit.FunSuite {
 
     assertEquals(complete, concise)
     assertEquals(concise, established)
+  }
+
+  test("declarations carry complete signatures separately from initializer ascriptions") {
+    val element = TypeSyntax.Reference(NameReference.Unqualified("Element"))
+    val signature = TypeSyntax.ForAll("Element", TypeSyntax.Integer, TypeSyntax.Arrow(element, element))
+    CpParser.parseModule("def identity[Element * Int](value: Element): Element = (value : Element);") match {
+      case Result.Ok(Module(_, _, List(Declaration.Term("identity", initializer, declaredType)))) =>
+        assertEquals(declaredType, Some(signature))
+        assertEquals(initializer, Expression.TypeLambda(
+          TypeBinder("Element", TypeSyntax.Integer),
+          Expression.Lambda(
+            ValueParameter("value", element),
+            Expression.Annotation(Expression.variable("value"), element)
+          )
+        ))
+      case other => fail(s"unexpected parse result: $other")
+    }
+    CpParser.parseModule("def answer = (42 : Int);") match {
+      case Result.Ok(Module(_, _, List(Declaration.Term("answer", _: Expression.Annotation, declaredType)))) =>
+        assertEquals(declaredType, None)
+      case other => fail(s"unexpected parse result: $other")
+    }
+  }
+
+  test("a where clause cannot replace an explicitly written bound, including top") {
+    List("Top", "Bottom", "Int").foreach { bound =>
+      CpParser.parseModule(s"def value[T * $bound] where T * Bool = top;") match {
+        case Result.Err(_: ParsingError.Syntax) => ()
+        case other => fail(s"expected duplicate-bound syntax failure, received: $other")
+      }
+    }
+    assertEquals(
+      CpParser.parseModule("def value[T] where T * Top = top;"),
+      CpParser.parseModule("def value[T * Top] = top;")
+    )
   }
 
   test("preferred, Unicode-preferred, and raw abstractions normalize to one core expression") {
@@ -395,9 +426,9 @@ class CpParserSuite extends munit.FunSuite {
         Expression.TypeApplication(
           Expression.TypeApplication(
             Expression.variable("build"),
-            Type.Variable("Input")
+            TypeSyntax.Reference(NameReference.Unqualified("Input"))
           ),
-          Type.Variable("Output")
+          TypeSyntax.Reference(NameReference.Unqualified("Output"))
         ),
         Expression.Literal(PrimitiveValue.Integer(1))
       ),
@@ -443,24 +474,41 @@ class CpParserSuite extends munit.FunSuite {
             _ :: Declaration.Term(
               "expMul",
               Expression.TypeLambda(
-                TypeBinder("Exp", Type.Top),
+                TypeBinder("Exp", TypeSyntax.Top),
                 Expression.Trait(
                   "self",
-                  Type.SignatureApplication(
+                  TypeSyntax.SignatureApplication(
                     NameReference.Unqualified("MulSig"),
-                    List(SortArgument.TypeArgument(Type.Variable("Exp")))
+                    List(SortArgument.TypeArgument(TypeSyntax.Reference(NameReference.Unqualified("Exp"))))
                   ),
-                  Type.Top,
-                  Expression.TypeApplication(
+                  TypeSyntax.Top,
+                  Some(Expression.TypeApplication(
                     Expression.Variable(NameReference.Unqualified("expAdd")),
-                    Type.Variable("Exp")
-                  ),
-                  Expression.Record(List(Member.Field("test", Expression.Top)))
+                    TypeSyntax.Reference(NameReference.Unqualified("Exp"))
+                  )),
+                  Expression.Record(List(Member.Field("test", Expression.Top, None)))
                 )
-              )
-            ) :: Declaration.Term("main", Expression.Top) :: Nil
+              ), None
+            ) :: Declaration.Term("main", Expression.Top, None) :: Nil
           )) => ()
       case other => fail(s"unexpected parse result: $other")
+    }
+  }
+
+  test("trait and impl parsing preserve omitted and explicit inheritance clauses") {
+    List("" -> None, "inherits top" -> Some(Expression.Top)).foreach { case (clause, parent) =>
+      List(
+        s"def component = trait $clause => {};",
+        s"impl component from Top $clause = {};"
+      ).foreach { source =>
+        assertEquals(CpParser.parseModule(source), Result.Ok(Module(None, Nil, List(
+          Declaration.Term(
+            "component",
+            Expression.Trait("self", TypeSyntax.Top, TypeSyntax.Top, parent, Expression.Record(Nil)),
+            None
+          )
+        ))))
+      }
     }
   }
 
@@ -476,23 +524,21 @@ class CpParserSuite extends munit.FunSuite {
       case Result.Ok(Module(_, _,
             Declaration.Term(
               "make",
-              Expression.Annotation(
-                Expression.Lambda(
-                  ValueParameter("base", Type.Trait(required, provided)),
-                  Expression.Trait(
-                    "self",
-                    selfRequirement,
-                    implemented,
-                    Expression.Variable(NameReference.Unqualified("base")),
-                    _
-                  )
-                ),
-                _
-              )
-            ) :: Declaration.Term("main", Expression.Top) :: Nil
+              Expression.Lambda(
+                ValueParameter("base", TypeSyntax.Trait(required, provided)),
+                Expression.Trait(
+                  "self",
+                  selfRequirement,
+                  implemented,
+                  Some(Expression.Variable(NameReference.Unqualified("base"))),
+                  _
+                )
+              ),
+              Some(_)
+            ) :: Declaration.Term("main", Expression.Top, None) :: Nil
           )) =>
-        assertEquals(required, Type.Variable("Required"))
-        assertEquals(provided, Type.Variable("Provided"))
+        assertEquals(required, TypeSyntax.Reference(NameReference.Unqualified("Required")))
+        assertEquals(provided, TypeSyntax.Reference(NameReference.Unqualified("Provided")))
         assertEquals(selfRequirement, required)
         assertEquals(implemented, provided)
       case other => fail(s"unexpected parse result: $other")
@@ -509,7 +555,7 @@ class CpParserSuite extends munit.FunSuite {
               "eval",
               Nil,
               Expression.Variable(NameReference.Unqualified("value"))
-            )), Declaration.Term("main", Expression.Top))
+            )), Declaration.Term("main", Expression.Top, None))
           )) => ()
       case other => fail(s"unexpected parse result: $other")
     }
@@ -535,7 +581,7 @@ class CpParserSuite extends munit.FunSuite {
     CpParser.parseModule(source) match {
       case Result.Ok(Module(_, _, List(Declaration.Term(
             "main",
-            Expression.Record(List(Member.Field("left", _), Member.Field("right", _)))
+            Expression.Record(List(Member.Field("left", _, None), Member.Field("right", _, None))), None
           )))) => ()
       case other => fail(s"unexpected parse result: $other")
     }
@@ -555,10 +601,10 @@ class CpParserSuite extends munit.FunSuite {
       case Result.Ok(Module(_, _, List(Declaration.Term(
             "main",
             Expression.Record(List(
-              Member.Field("fallback", _),
+              Member.Field("fallback", _, None),
               _: Member.MethodPattern,
               _: Member.MethodPattern
-            ))
+            )), None
           )))) => ()
       case other => fail(s"unexpected parse result: $other")
     }
@@ -571,17 +617,9 @@ class CpParserSuite extends munit.FunSuite {
     }
   }
 
-  test("a declared signature cannot be applied with expression square brackets") {
-    val source =
-      """
-        |type Signature<Sort> = { field: Sort; };
-        |def main = Signature[Argument];
-        |""".stripMargin
-
-    assertEquals(
-      CpParser.parseModule(source),
-      Result.Err(ParsingError.SignatureUsedAsOrdinaryTypeApplication("Signature"))
-    )
+  test("parsing preserves type applications for scope-aware name resolution") {
+    val source = "type Signature<Sort> = { field: Sort }; def main = Signature[Argument];"
+    assert(CpParser.parseModule(source).toOption.nonEmpty)
   }
 
   test("compilation units reject top-level expressions") {
@@ -593,7 +631,7 @@ class CpParserSuite extends munit.FunSuite {
 
   private def parseMainInitializer(source: String): Result[Expression, ParsingError] = {
     CpParser.parseModule(s"def main = $source;").map {
-      case Module(_, _, List(Declaration.Term("main", initializer))) => initializer
+      case Module(_, _, List(Declaration.Term("main", initializer, None))) => initializer
       case module => throw new IllegalStateException(s"unexpected generated module: $module")
     }
   }

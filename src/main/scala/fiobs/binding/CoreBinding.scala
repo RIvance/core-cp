@@ -1,9 +1,39 @@
 package cp.fiobs.binding
 
 import cp.fiobs.*
+import cp.naming.Identifier
 
 object Binding {
   extension (term: Term) {
+    /** Replaces globals without capturing the free term or type variables in their replacements. */
+    def substituteGlobals(replacements: Map[Identifier, Term]): Term = term match {
+      case Term.Global(identifier) => replacements.getOrElse(identifier, term)
+      case Term.Variable(_) | Term.Literal(_) | Term.Top => term
+      case Term.Lambda(body) =>
+        Term.Lambda(body.substituteGlobals(replacements.view.mapValues(_.shiftTermVariables(1)).toMap))
+      case Term.Fix(annotatedType, body) =>
+        Term.Fix(annotatedType, body.substituteGlobals(replacements.view.mapValues(_.shiftTermVariables(1)).toMap))
+      case Term.Application(function, argument) =>
+        Term.Application(function.substituteGlobals(replacements), argument.substituteGlobals(replacements))
+      case Term.Merge(left, right) =>
+        Term.Merge(left.substituteGlobals(replacements), right.substituteGlobals(replacements))
+      case Term.Annotation(inner, annotatedType) =>
+        Term.Annotation(inner.substituteGlobals(replacements), annotatedType)
+      case Term.TypeLambda(bound, body) =>
+        Term.TypeLambda(bound, body.substituteGlobals(replacements.view.mapValues(_.shiftTypeVariables(1)).toMap))
+      case Term.TypeApplication(function, argumentType) =>
+        Term.TypeApplication(function.substituteGlobals(replacements), argumentType)
+      case Term.Record(label, field) => Term.Record(label, field.substituteGlobals(replacements))
+      case Term.Projection(record, label) => Term.Projection(record.substituteGlobals(replacements), label)
+      case Term.Binary(operator, left, right) =>
+        Term.Binary(operator, left.substituteGlobals(replacements), right.substituteGlobals(replacements))
+      case Term.If(condition, whenTrue, whenFalse) => Term.If(
+          condition.substituteGlobals(replacements),
+          whenTrue.substituteGlobals(replacements),
+          whenFalse.substituteGlobals(replacements)
+        )
+    }
+
     def shiftTermVariables(by: Int, cutoff: Int = 0): Term = term match {
       case Term.Variable(index) =>
         if (index < cutoff) term else Term.Variable(shiftedIndex(index, by))

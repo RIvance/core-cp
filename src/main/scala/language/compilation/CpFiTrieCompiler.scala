@@ -29,15 +29,8 @@ object CpFiTrieCompiler {
     program.definitionsFor(targetNamespace) match {
       case None => Result.Err(CpFiTrieCompilationError.ModuleNotCompiled(targetNamespace))
       case Some(requiredDefinitions) =>
-        val globalTypes = requiredDefinitions.map { case (identifier, definition) =>
-          identifier -> definition.programType
-        }
         Result.traverse(requiredDefinitions.toList.sortBy(_._1.render)) { case (identifier, definition) =>
-          FiTrieCompiler.compileChecking(
-            definition.sourceTerm,
-            definition.programType,
-            globalTypes
-          ).mapError(error => CpFiTrieCompilationError.Definition(identifier, error))
+          FiTrieCompiler.compile(definition).mapError(error => CpFiTrieCompilationError.Definition(identifier, error))
             .map(compiled => identifier -> compiled.targetTrie)
         }.flatMap { compiledDefinitions =>
           val targetDefinitions = compiledDefinitions.toMap

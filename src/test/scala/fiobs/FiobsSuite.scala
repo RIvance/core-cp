@@ -56,6 +56,23 @@ class FiobsSuite extends munit.FunSuite {
     )
   }
 
+  test("primitive overload errors preserve the signature, operand, and underlying failure") {
+    val missing = Namespace("Library").identifier("missing")
+    val one = Term.Literal(PrimitiveValue.Integer(1))
+    List(
+      Term.Binary(BinaryOperator.Add, Term.Global(missing), one),
+      Term.Binary(BinaryOperator.Add, one, Term.Global(missing))
+    ).foreach { term =>
+      Fiobs.infer(term) match {
+        case Result.Err(TypeError.NoPrimitiveSignature(BinaryOperator.Add, _, candidates)) =>
+          assert(candidates.nonEmpty)
+          assert(candidates.exists(_.cause == TypeError.UnboundGlobal(missing)))
+          assertEquals(candidates.map(_.signature), BinaryOperator.Add.signatures)
+        case other => fail(s"expected structured candidate failures, received: $other")
+      }
+    }
+  }
+
   test("primitive operators own typing signatures and evaluation") {
     val expressions = List(
       Expr.Binary(
@@ -272,6 +289,62 @@ class FiobsSuite extends munit.FunSuite {
     assert(Type.Arrow(Type.Integer, Type.Top).isSilent())
     assert(!Type.Bottom.isSilent())
     assert(!Type.Arrow(Type.Integer, Type.Bottom).isSilent())
+  }
+
+  test("top is the intersection identity for primitive and structured interfaces") {
+    List(
+      Type.Integer,
+      Type.Top,
+      Type.Bottom,
+      Type.Arrow(Type.Integer, Type.Top),
+      Type.ForAll(Type.Bottom, Type.Variable(0)),
+      Type.Record("field", Type.Integer)
+    ).foreach { inputType =>
+      List(Type.Intersection(inputType, Type.Top), Type.Intersection(Type.Top, inputType)).foreach { withTop =>
+        assert(inputType.isSubtypeOf(withTop))
+        assert(withTop.isSubtypeOf(inputType))
+      }
+      assert(Disjointness(TypeContext.empty).relates(inputType, Type.Top))
+      assert(Disjointness(TypeContext.empty).relates(Type.Top, inputType))
+    }
+  }
+
+  test("bottom bounds establish route silence while top bounds remain unrestricted") {
+    val silentContext = TypeContext.empty.extend(Type.Bottom)
+    val unrestrictedContext = TypeContext.empty.extend(Type.Top)
+    assert(Type.Variable(0).isSilent(silentContext))
+    assert(!Type.Variable(0).isSilent(unrestrictedContext))
+    assert(Disjointness(silentContext).relates(Type.Variable(0), Type.Integer))
+    assert(!Disjointness(unrestrictedContext).relates(Type.Variable(0), Type.Integer))
+    assert(!Type.Top.isSubtypeOf(Type.Arrow(Type.Integer, Type.Top)))
+    assert(!Type.Top.isSubtypeOf(Type.Record("field", Type.Top)))
+    assert(!Type.Top.isSubtypeOf(Type.ForAll(Type.Top, Type.Top)))
+  }
+
+  test("repeated higher-order intersection casts preserve captured arguments") {
+    val functionType = SurfaceType.Arrow(
+      SurfaceType.Integer,
+      SurfaceType.Arrow(SurfaceType.Integer, SurfaceType.Intersection(SurfaceType.Integer, SurfaceType.Top))
+    )
+    val function = Expr.Annotation(
+      Expr.Lambda("left", Expr.Lambda("right", Expr.Binary(
+        BinaryOperator.Add, Expr.Variable("left"), Expr.Variable("right")
+      ))),
+      functionType
+    )
+    List(0, 3, 6).foreach { repetitions =>
+      val castFunction = (0 until repetitions).foldLeft(function: Expr) { (term, _) =>
+        Expr.Annotation(term, functionType)
+      }
+      val result = Expr.Annotation(
+        Expr.Application(
+          Expr.Application(castFunction, Expr.Literal(PrimitiveValue.Integer(20))),
+          Expr.Literal(PrimitiveValue.Integer(22))
+        ),
+        SurfaceType.Integer
+      )
+      assertEquals(Fiobs.evaluate(result), Result.Ok(Value.Primitive(PrimitiveValue.Integer(42))))
+    }
   }
 
   test("primitive failures remain structured in pure evaluation logic") {

@@ -4,7 +4,7 @@ import cp.fiobs.Term
 import cp.fiobs.runtime.Value
 import cp.language.compilation.{CpSourceFile, ModuleSourceError}
 import cp.language.elaboration.{CpElaborationError, NameResolutionError}
-import cp.language.evaluation.CpEvaluationError
+import cp.language.evaluation.{CpEvaluationError, CpEvaluator}
 import cp.naming.Namespace
 import cp.primitive.PrimitiveValue
 import cp.util.Result
@@ -289,7 +289,7 @@ class ModuleSuite extends munit.FunSuite {
     Cp.compileModules(List(library)) match {
       case Result.Ok(program) =>
         assertEquals(
-          cp.language.evaluation.CpEvaluator.evaluate(program, Namespace("Library")),
+          CpEvaluator.evaluate(program, Namespace("Library")),
           Result.Err(CpEvaluationError.EntryPointNotFound(Namespace("Library").identifier("main")))
         )
       case other => fail(s"unexpected compilation result: $other")

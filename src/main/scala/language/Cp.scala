@@ -1,9 +1,9 @@
 package cp.language
 
-import cp.fiobs.{CompilationError as FiobsCompilationError, CompiledProgram, Fiobs}
+import cp.fiobs.{CompilationError as FiobsCompilationError, CheckedProgram, Fiobs}
 import cp.fiobs.runtime.{GlobalEnvironment, Value}
 import cp.language.compilation.{CpSourceFile, IdentifiedSourceModule, ModuleSourceError, SourcePath}
-import cp.language.core.{Module, Type}
+import cp.language.core.Module
 import cp.language.elaboration.*
 import cp.language.evaluation.{CpEvaluationError, CpEvaluator}
 import cp.language.parser.{CpParser, ParsingError}
@@ -14,7 +14,7 @@ final case class CompiledCpModule(
   sourceFile: CpSourceFile,
   sourceModule: Module,
   elaboratedModule: ElaboratedModule,
-  definitions: Map[Identifier, CompiledProgram]
+  definitions: Map[Identifier, CheckedProgram]
 ) {
   def namespace: Namespace = elaboratedModule.namespace
 }
@@ -31,7 +31,7 @@ final case class CompiledCpProgram(modules: Map[Namespace, CompiledCpModule]) {
   }
 
   /** Definitions visible while executing a module, including its transitive imports. */
-  def definitionsFor(namespace: Namespace): Option[Map[Identifier, CompiledProgram]] = {
+  def definitionsFor(namespace: Namespace): Option[Map[Identifier, CheckedProgram]] = {
     modules.get(namespace).map { _ =>
       dependencyClosure(namespace).flatMap(requiredNamespace => modules(requiredNamespace).definitions).toMap
     }
@@ -236,31 +236,20 @@ object Cp {
   private def compileDefinitions(
     module: ElaboratedModule,
     importedHeaders: Map[Namespace, ElaboratedModuleHeader]
-  ): Result[Map[Identifier, CompiledProgram], CpCompilationError] = {
+  ): Result[Map[Identifier, CheckedProgram], CpCompilationError] = {
     val languageGlobalTypes = importedHeaders.valuesIterator.flatMap(_.termSignatures).toMap ++
       module.globalTermTypes
-    Result.traverse(languageGlobalTypes.toList.sortBy(_._1.render)) { case (identifier, inputType) =>
-      TypeTranslation.toFiobsType(inputType, Nil)
-        .mapError(error => CpCompilationError.Elaboration(
-          module.namespace,
-          CpElaborationError.TypeTranslation(error)
-        ))
-        .map(identifier -> _)
-    }.flatMap { translatedGlobals =>
-      val globalTypes = translatedGlobals.toMap
-      Result.traverse(module.termDefinitions.toList.sortBy(_._1.render)) {
-        case (identifier, definition) =>
-          TypeTranslation.toSurfaceType(definition.definitionType)
-            .mapError(error => CpCompilationError.Elaboration(
-              module.namespace,
-              CpElaborationError.TypeTranslation(error)
-            ))
-            .flatMap { expectedType =>
-              Fiobs.compileChecking(definition.initializer, expectedType, globalTypes)
-                .mapError(error => CpCompilationError.Fiobs(identifier, error))
-                .map(identifier -> _)
-            }
-      }.map(_.toMap)
-    }
+    val globalTypes = languageGlobalTypes.view.mapValues(TypeTranslation.toFiobs).toMap
+    Result.traverse(module.termDefinitions.toList.sortBy(_._1.name)) { case (identifier, definition) =>
+      Fiobs.infer(definition.initializer, globalTypes)
+        .mapError(error => CpCompilationError.Fiobs(identifier, FiobsCompilationError.Typing(error)))
+        .map { program =>
+          require(
+            program.programType == TypeTranslation.toFiobs(definition.definitionType),
+            "an elaborated definition must synthesize its recorded CP interface"
+          )
+          identifier -> program
+        }
+    }.map(_.toMap)
   }
 }

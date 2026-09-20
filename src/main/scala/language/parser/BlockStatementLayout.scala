@@ -1,5 +1,6 @@
 package cp.language.parser
 
+import scala.collection.mutable.Builder
 import scala.util.parsing.input.CharSequenceReader
 
 /** Locates layout boundaries between a block binding and its following expression. */
@@ -58,7 +59,7 @@ private[parser] object BlockStatementLayout {
     source: CharSequence,
     boundary: Int,
     bindingColumn: Int,
-    boundaries: scala.collection.mutable.Builder[Int, List[Int]]
+    boundaries: Builder[Int, List[Int]]
   ): Unit = {
     nextTokenOffset(source, boundary).foreach { tokenOffset =>
       val tokenColumn = new CharSequenceReader(source, tokenOffset).pos.column

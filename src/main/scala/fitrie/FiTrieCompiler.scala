@@ -1,6 +1,6 @@
 package cp.fitrie
 
-import cp.fiobs.{Expr, SurfaceType, Term, Type}
+import cp.fiobs.{CheckedProgram, Expr, SurfaceType, Term, Type}
 import cp.fiobs.elaboration.{ElaborationError as SourceElaborationError, Elaborator as SourceElaborator}
 import cp.fitrie.elaboration.{Elaborator as TargetElaborator, FiTrieElaborationError}
 import cp.naming.Identifier
@@ -19,6 +19,13 @@ enum FiTrieCompilationError {
 
 /** Public source-to-FiTrie compilation boundary. */
 object FiTrieCompiler {
+  /** Reuses an established typing result without checking or decorating its source again. */
+  def compile(program: CheckedProgram): Result[CompiledFiTrie, FiTrieCompilationError] = {
+    TargetElaborator.lower(program)
+      .mapError(FiTrieCompilationError.TargetElaboration(_))
+      .map(typed => CompiledFiTrie(program.sourceTerm, typed.trie, program.programType))
+  }
+
   def compile(
     expression: Expr,
     globalTypes: Map[Identifier, Type] = Map.empty

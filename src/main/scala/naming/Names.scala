@@ -1,5 +1,7 @@
 package cp.naming
 
+import scala.math.Ordering.Implicits.seqOrdering
+
 /** An absolute namespace path. Relative namespace interpretation is intentionally absent. */
 final case class Namespace private (segments: Vector[String]) {
   def isRoot: Boolean = segments.isEmpty
@@ -32,6 +34,10 @@ final case class Identifier(scope: Namespace, name: String) {
   def render: String = if (scope.isRoot) name else s"${scope.render}::$name"
 
   override def toString: String = render
+}
+
+object Identifier {
+  given Ordering[Identifier] = Ordering.by(identifier => (identifier.scope.segments, identifier.name))
 }
 
 /** A source reference is either unqualified or explicitly absolute. */

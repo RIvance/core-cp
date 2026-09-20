@@ -1,6 +1,7 @@
 package cp.language.elaboration
 
-import cp.language.core.{Declaration, SortArgument, Type}
+import cp.language.core.{Declaration, SortArgument, TypeSyntax}
+import cp.language.typing.Type
 import cp.naming.{Identifier, NameReference}
 import cp.util.Result
 
@@ -8,45 +9,85 @@ enum TypeExpansionError {
   case NameResolution(error: NameResolutionError)
   case UnknownSignature(identifier: Identifier)
   case SignatureArityMismatch(identifier: Identifier, expected: Int, actual: Int)
-  case UnexpectedNamedType(inputType: Type)
-  case UnexpectedSignatureApplication(inputType: Type)
+  case DuplicateSortParameter(name: String)
 }
 
-final case class SignatureDefinition(
-  negativeParameters: List[String],
-  positiveParameters: List[String],
-  bodyType: Type
-)
+final case class SortTypes(negative: Type, positive: Type)
 
-final case class TypeExpansionContext private (
+/** A signature body is closed over adjacent negative/positive slots for each sort. */
+final case class SignatureDefinition(parameters: List[String], bodyType: Type) {
+  require(bodyType.isWellScoped(parameters.size * 2), "a signature body must be closed over its sort parameters")
+
+  def instantiate(identifier: Identifier, arguments: List[SortTypes]): Result[Type, TypeExpansionError] = {
+    if (arguments.size != parameters.size) {
+      Result.Err(TypeExpansionError.SignatureArityMismatch(identifier, parameters.size, arguments.size))
+    } else {
+      Result.Ok(bodyType.instantiate(arguments.flatMap(argument => List(argument.negative, argument.positive))))
+    }
+  }
+}
+
+private enum TypeBinding {
+  case Ordinary(name: String)
+  case Sort(name: String)
+  case PositiveSort
+
+  def sourceName: Option[String] = this match {
+    case Ordinary(name) => Some(name)
+    case Sort(name) => Some(name)
+    case PositiveSort => None
+  }
+}
+
+/** Owns the lexical interpretation of source type names and paired sort binders. */
+final class TypeScope private (bindings: List[TypeBinding]) {
+  def withType(name: String): TypeScope = new TypeScope(TypeBinding.Ordinary(name) :: bindings)
+
+  def lookup(name: String): Option[Type] = {
+    bindings.indexWhere(_.sourceName.contains(name)) match {
+      case -1 => None
+      case index => Some(Type.Variable(index))
+    }
+  }
+
+  def lookupSort(name: String): Option[SortTypes] = {
+    bindings.zipWithIndex.find(_._1.sourceName.contains(name)).collect {
+      case (TypeBinding.Sort(_), index) => SortTypes(Type.Variable(index), Type.Variable(index + 1))
+    }
+  }
+
+  private[elaboration] def sortCompanions: Map[Int, Int] = {
+    bindings.zipWithIndex.collect { case (TypeBinding.Sort(_), index) => index -> (index + 1) }.toMap
+  }
+}
+
+object TypeScope {
+  val empty: TypeScope = new TypeScope(Nil)
+
+  def sorts(parameters: List[String]): TypeScope = {
+    new TypeScope(parameters.flatMap(name => List(TypeBinding.Sort(name), TypeBinding.PositiveSort)))
+  }
+}
+
+final case class TypeExpansionContext(
   moduleScope: ModuleScope,
   signatures: Map[Identifier, SignatureDefinition]
 ) {
-  def lookup(identifier: Identifier): Option[SignatureDefinition] = {
-    signatures.get(identifier)
-  }
-
-  def resolve(reference: NameReference): Result[Identifier, TypeExpansionError] = {
-    moduleScope.resolveType(reference).mapError(TypeExpansionError.NameResolution(_))
-  }
-
   def register(identifier: Identifier, definition: SignatureDefinition): TypeExpansionContext = {
     copy(signatures = signatures.updated(identifier, definition))
   }
 
-  def registeredNames: Set[String] = {
-    signatures.keySet.map(_.name)
+  def resolve(reference: NameReference): Result[(Identifier, SignatureDefinition), TypeExpansionError] = {
+    moduleScope.resolveType(reference).mapError(TypeExpansionError.NameResolution(_)).flatMap { identifier =>
+      signatures.get(identifier) match {
+        case Some(definition) => Result.Ok(identifier -> definition)
+        case None => Result.Err(TypeExpansionError.UnknownSignature(identifier))
+      }
+    }
   }
 }
 
-object TypeExpansionContext {
-  def apply(
-    moduleScope: ModuleScope,
-    importedDefinitions: Map[Identifier, SignatureDefinition]
-  ): TypeExpansionContext = new TypeExpansionContext(moduleScope, importedDefinitions)
-}
-
-enum TypePolarity {
+private enum TypePolarity {
   case Positive, Negative
 
   def flipped: TypePolarity = this match {
@@ -56,295 +97,157 @@ enum TypePolarity {
 }
 
 object TypeExpansion {
-  def registerSignature(
+  def signature(
     declaration: Declaration.TypeSignature,
-    identifier: Identifier,
     context: TypeExpansionContext
-  ): Result[TypeExpansionContext, TypeExpansionError] = {
-    val unavailableNames =
-      declaration.requiredInterface.freeVariables ++
-        declaration.providedInterface.freeVariables ++
-        declaration.sortParameters.toSet ++
-        context.registeredNames
-    val positiveParameters = freshPositiveParameters(
-      declaration.sortParameters,
-      unavailableNames
-    )
-    val sortMappings = declaration.sortParameters.zip(positiveParameters).toMap
-
-    // β̄ fresh
-    // Δ ; ᾱ ↦ β̄ ⊢ A ⇒ A₁    Δ ; ᾱ ↦ β̄ ⊢ B ⇒ B₁
-    // ᾱ ↦ β̄ ⊢⁺false B₁ ⇒ B₂
-    // These are the signature-expansion premises of E-TypeDecl. The complete
-    // program rule is beside the declaration case in CpElaborator.
-    for {
-      requiredInterface <- expand(
-        declaration.requiredInterface,
-        context,
-        sortMappings,
-        declaration.sortParameters.toSet
-      )
-      providedInterface <- expand(
-        declaration.providedInterface,
-        context,
-        sortMappings,
-        declaration.sortParameters.toSet
-      )
-      transformedProvided <- transformSorts(
-        providedInterface,
-        sortMappings,
-        TypePolarity.Positive,
-        insideConstructorField = false
-      )
-    } yield context.register(
-      identifier,
-      SignatureDefinition(
-        declaration.sortParameters,
-        positiveParameters,
-        Type.Intersection(requiredInterface, transformedProvided)
-      )
-    )
+  ): Result[SignatureDefinition, TypeExpansionError] = {
+    declaration.sortParameters.groupBy(identity).collectFirst {
+      case (name, occurrences) if occurrences.size > 1 => name
+    } match {
+      case Some(name) => Result.Err(TypeExpansionError.DuplicateSortParameter(name))
+      case None =>
+        val scope = TypeScope.sorts(declaration.sortParameters)
+        // β̄ fresh    Δ ; ᾱ ↦ β̄ ⊢ A ⇒ A₁    Δ ; ᾱ ↦ β̄ ⊢ B ⇒ B₁
+        // ᾱ ↦ β̄ ⊢⁺false B₁ ⇒ B₂
+        // ───────────────────────────────────────────────────────────── E-TypeDecl
+        // Δ ⊢ type X⟨ᾱ⟩ extends A = B ⇒ Δ, X⟨ᾱ, β̄⟩ ↦ A₁ ∧ B₂
+        for {
+          required <- expand(declaration.requiredInterface, context, scope)
+          provided <- expand(declaration.providedInterface, context, scope)
+        } yield SignatureDefinition(
+          declaration.sortParameters,
+          Type.intersection(required, transformSorts(provided, scope.sortCompanions, TypePolarity.Positive, false))
+        )
+    }
   }
 
+  /** Resolves all references and eliminates all signature applications in one traversal. */
   def expand(
-    inputType: Type,
+    inputType: TypeSyntax,
     context: TypeExpansionContext,
-    sortMappings: Map[String, String] = Map.empty,
-    boundVariables: Set[String] = Set.empty
+    scope: TypeScope = TypeScope.empty
   ): Result[Type, TypeExpansionError] = inputType match {
-    case Type.Primitive(_) | Type.Top | Type.Bottom => Result.Ok(inputType)
-
-    // α ∈ Ξ
-    // ───────────── Expand-Var
-    // Δ, Σ, Ξ ⊢ α ⇒ α
-    case Type.Variable(name) if boundVariables.contains(name) => Result.Ok(inputType)
-
-    case Type.Variable(name) =>
-      context.resolve(NameReference.Unqualified(name)).flatMap { identifier =>
-        context.lookup(identifier) match {
-          // X⟨⟩ ↦ C ∈ Δ
-          // ──────────────── Expand-Alias
-          // Δ, Σ, Ξ ⊢ X ⇒ C
-          case Some(definition) if definition.negativeParameters.isEmpty => Result.Ok(definition.bodyType)
-          case Some(definition) => Result.Err(TypeExpansionError.SignatureArityMismatch(
-            identifier,
-            definition.negativeParameters.length,
-            0
-          ))
-          case None => Result.Err(TypeExpansionError.UnknownSignature(identifier))
+    case TypeSyntax.Primitive(kind) => Result.Ok(Type.Primitive(kind))
+    case TypeSyntax.Top => Result.Ok(Type.Top)
+    case TypeSyntax.Bottom => Result.Ok(Type.Bottom)
+    case TypeSyntax.Reference(reference) =>
+      val local = reference match {
+        case NameReference.Unqualified(name) => scope.lookup(name)
+        case NameReference.Qualified(_) => None
+      }
+      // α ∈ Ξ                         X⟨⟩ ↦ C ∈ Δ
+      // ───────────── Expand-Var       ──────────────── Expand-Alias
+      // Δ, Σ, Ξ ⊢ α ⇒ α               Δ, Σ, Ξ ⊢ X ⇒ C
+      local match {
+        case Some(variable) => Result.Ok(variable)
+        case None => context.resolve(reference).flatMap { case (identifier, definition) =>
+          definition.instantiate(identifier, Nil)
         }
       }
-    case Type.Named(reference) =>
-      context.resolve(reference).flatMap { identifier =>
-        context.lookup(identifier) match {
-          case Some(definition) if definition.negativeParameters.isEmpty => Result.Ok(definition.bodyType)
-          case Some(definition) => Result.Err(TypeExpansionError.SignatureArityMismatch(
-            identifier,
-            definition.negativeParameters.length,
-            0
-          ))
-          case None => Result.Err(TypeExpansionError.UnknownSignature(identifier))
-        }
-      }
-    case Type.Arrow(parameterType, resultType) =>
+    case TypeSyntax.Arrow(parameterType, resultType) =>
       for {
-        expandedParameter <- expand(parameterType, context, sortMappings, boundVariables)
-        expandedResult <- expand(resultType, context, sortMappings, boundVariables)
-      } yield Type.Arrow(expandedParameter, expandedResult)
-    case Type.ForAll(typeParameter, disjointBound, bodyType) =>
+        parameter <- expand(parameterType, context, scope)
+        result <- expand(resultType, context, scope)
+      } yield Type.Arrow(parameter, result)
+    case TypeSyntax.ForAll(name, disjointBound, bodyType) =>
       for {
-        expandedBound <- expand(disjointBound, context, sortMappings, boundVariables)
-        expandedBody <- expand(
-          bodyType,
-          context,
-          sortMappings - typeParameter,
-          boundVariables + typeParameter
-        )
-      } yield Type.ForAll(typeParameter, expandedBound, expandedBody)
-    case Type.Intersection(leftType, rightType) =>
+        bound <- expand(disjointBound, context, scope)
+        body <- expand(bodyType, context, scope.withType(name))
+      } yield Type.ForAll(bound, body)
+    case TypeSyntax.Intersection(leftType, rightType) =>
       for {
-        expandedLeft <- expand(leftType, context, sortMappings, boundVariables)
-        expandedRight <- expand(rightType, context, sortMappings, boundVariables)
-      } yield Type.Intersection(expandedLeft, expandedRight)
-    case Type.Record(label, fieldType) =>
-      expand(fieldType, context, sortMappings, boundVariables).map(Type.Record(label, _))
-    case Type.Trait(requiredInterface, providedInterface) =>
+        left <- expand(leftType, context, scope)
+        right <- expand(rightType, context, scope)
+      } yield Type.intersection(left, right)
+    case TypeSyntax.Record(label, fieldType) =>
+      expand(fieldType, context, scope).map(Type.Record(label, _))
+    case TypeSyntax.Trait(requiredInterface, providedInterface) =>
       for {
-        expandedRequired <- expand(requiredInterface, context, sortMappings, boundVariables)
-        expandedProvided <- expand(providedInterface, context, sortMappings, boundVariables)
-      } yield Type.Trait(expandedRequired, expandedProvided)
-    case Type.SignatureApplication(reference, arguments) =>
-      context.resolve(reference).flatMap { identifier =>
-        context.lookup(identifier) match {
-          case None => Result.Err(TypeExpansionError.UnknownSignature(identifier))
-          case Some(definition) if definition.negativeParameters.length != arguments.length =>
-            Result.Err(TypeExpansionError.SignatureArityMismatch(
-              identifier,
-              definition.negativeParameters.length,
-              arguments.length
-            ))
-          case Some(definition) =>
-            // X⟨ᾱ, β̄⟩ ↦ C ∈ Δ    Σ ⊢ S̄ ⇒ (Ā, B̄)
-            // ───────────────────────────────────────────── Expand-Sig
-            // Δ, Σ ⊢ X⟨S̄⟩ ⇒ [Ā/ᾱ, B̄/β̄]C
-            Result.traverse(arguments)(
-              expandSortArgument(_, context, sortMappings, boundVariables)
-            ).map { pairs =>
-              val replacements =
-                definition.negativeParameters.zip(pairs.map(_._1)).toMap ++
-                  definition.positiveParameters.zip(pairs.map(_._2)).toMap
-              definition.bodyType.substituteVariables(replacements)
-            }
-        }
+        required <- expand(requiredInterface, context, scope)
+        provided <- expand(providedInterface, context, scope)
+      } yield Type.Trait(required, provided)
+    case TypeSyntax.SignatureApplication(reference, arguments) =>
+      // X⟨ᾱ, β̄⟩ ↦ C ∈ Δ    Σ ⊢ S̄ ⇒ (Ā, B̄)
+      // ───────────────────────────────────────────── Expand-Sig
+      // Δ, Σ ⊢ X⟨S̄⟩ ⇒ [Ā/ᾱ, B̄/β̄]C
+      context.resolve(reference).flatMap { case (identifier, definition) =>
+        Result.traverse(arguments)(expandSortArgument(_, context, scope))
+          .flatMap(definition.instantiate(identifier, _))
       }
   }
 
   private def expandSortArgument(
     argument: SortArgument,
     context: TypeExpansionContext,
-    sortMappings: Map[String, String],
-    boundVariables: Set[String]
-  ): Result[(Type, Type), TypeExpansionError] = argument match {
-    // α ↦ β ∈ Σ
-    // ───────────────── Sort-Var
-    // Σ ⊢ α ⇒ (α, β)
-    case SortArgument.TypeArgument(Type.Variable(name)) if sortMappings.contains(name) =>
-      Result.Ok(Type.Variable(name) -> Type.Variable(sortMappings(name)))
-
-    // Δ, Σ ⊢ A ⇒ A′    A is not a registered sort variable
-    // ──────────────────────────────────────────────── Sort-Type
-    // Σ ⊢ A ⇒ (A′, A′)
+    scope: TypeScope
+  ): Result[SortTypes, TypeExpansionError] = argument match {
     case SortArgument.TypeArgument(argumentType) =>
-      expand(argumentType, context, sortMappings, boundVariables).map(expanded => expanded -> expanded)
-
-    // Δ, Σ ⊢ A ⇒ A′    Δ, Σ ⊢ B ⇒ B′
-    // ─────────────────────────────────────── Sort-Pair
-    // Σ ⊢ A % B ⇒ (A′ ∧ B′, B′)
+      val sort = argumentType match {
+        case TypeSyntax.Reference(NameReference.Unqualified(name)) => scope.lookupSort(name)
+        case _ => None
+      }
+      // α ↦ β ∈ Σ                     Δ, Σ ⊢ A ⇒ A′    A ∉ dom(Σ)
+      // ───────────────── Sort-Var     ─────────────────────────── Sort-Type
+      // Σ ⊢ α ⇒ (α, β)                 Σ ⊢ A ⇒ (A′, A′)
+      sort match {
+        case Some(pair) => Result.Ok(pair)
+        case None => expand(argumentType, context, scope).map(expanded => SortTypes(expanded, expanded))
+      }
     case SortArgument.Dependency(negativeType, positiveType) =>
+      // Δ, Σ ⊢ A ⇒ A′    Δ, Σ ⊢ B ⇒ B′
+      // ─────────────────────────────────────── Sort-Pair
+      // Σ ⊢ A % B ⇒ (A′ ∧ B′, B′)
       for {
-        expandedNegative <- expand(negativeType, context, sortMappings, boundVariables)
-        expandedPositive <- expand(positiveType, context, sortMappings, boundVariables)
-      } yield Type.Intersection(expandedNegative, expandedPositive) -> expandedPositive
+        negative <- expand(negativeType, context, scope)
+        positive <- expand(positiveType, context, scope)
+      } yield SortTypes(Type.intersection(negative, positive), positive)
   }
 
   private def transformSorts(
     inputType: Type,
-    sortMappings: Map[String, String],
+    companions: Map[Int, Int],
     polarity: TypePolarity,
     insideConstructorField: Boolean
-  ): Result[Type, TypeExpansionError] = inputType match {
-    // α ↦ β ∈ Σ
-    // ───────────────────────── ST-Positive
-    // Σ ⊢⁺false α ⇒ β
-    case Type.Variable(name)
-        if polarity == TypePolarity.Positive &&
-          !insideConstructorField &&
-          sortMappings.contains(name) =>
-      Result.Ok(Type.Variable(sortMappings(name)))
-
-    // α ↦ β ∈ Σ
-    // ─────────────────────────────── ST-CtorPositive
-    // Σ ⊢⁺true α ⇒ Trait[α, β]
-    case Type.Variable(name)
-        if polarity == TypePolarity.Positive &&
-          insideConstructorField &&
-          sortMappings.contains(name) =>
-      Result.Ok(Type.Trait(Type.Variable(name), Type.Variable(sortMappings(name))))
-
-    case Type.Primitive(_) | Type.Top | Type.Bottom | Type.Variable(_) => Result.Ok(inputType)
-
-    case Type.Named(_) => Result.Err(TypeExpansionError.UnexpectedNamedType(inputType))
-
+  ): Type = inputType match {
+    // α ↦ β ∈ Σ                     α ↦ β ∈ Σ
+    // ───────────────── ST-Positive  ────────────────────────── ST-CtorPositive
+    // Σ ⊢⁺false α ⇒ β                Σ ⊢⁺true α ⇒ Trait[α, β]
+    case Type.Variable(index) if polarity == TypePolarity.Positive && companions.contains(index) =>
+      val positive = Type.Variable(companions(index))
+      if (insideConstructorField) Type.Trait(inputType, positive) else positive
+    case Type.Primitive(_) | Type.Top | Type.Bottom | Type.Variable(_) => inputType
     // Σ ⊢ᶠˡⁱᵖ⁽ᵖ⁾ A ⇒ A′    Σ ⊢ᵖ B ⇒ B′
-    // ─────────────────────────────────────── ST-Arrow
-    // Σ ⊢ᵖ A ⇾ B ⇒ A′ ⇾ B′
-    case Type.Arrow(parameterType, resultType) =>
-      for {
-        transformedParameter <- transformSorts(
-          parameterType,
-          sortMappings,
-          polarity.flipped,
-          insideConstructorField
-        )
-        transformedResult <- transformSorts(
-          resultType,
-          sortMappings,
-          polarity,
-          insideConstructorField
-        )
-      } yield Type.Arrow(transformedParameter, transformedResult)
-
-    case Type.ForAll(typeParameter, disjointBound, bodyType) =>
-      val mappingsBelowBinder = sortMappings - typeParameter
-      // Σ∖{α} ⊢ᵖ A ⇒ A′    Σ∖{α} ⊢ᵖ B ⇒ B′
-      // ───────────────────────────────────────── ST-All
-      // Σ ⊢ᵖ ∀(α ∗ A). B ⇒ ∀(α ∗ A′). B′
-      for {
-        transformedBound <- transformSorts(
-          disjointBound,
-          mappingsBelowBinder,
-          polarity,
-          insideConstructorField
-        )
-        transformedBody <- transformSorts(
-          bodyType,
-          mappingsBelowBinder,
-          polarity,
-          insideConstructorField
-        )
-      } yield Type.ForAll(typeParameter, transformedBound, transformedBody)
-
+    // ─────────────────────────────────────── ST-Arrow / ST-Trait
+    // Σ ⊢ᵖ A ⇾ B ⇒ A′ ⇾ B′    Σ ⊢ᵖ Trait[A, B] ⇒ Trait[A′, B′]
+    case Type.Arrow(parameter, result) => Type.Arrow(
+        transformSorts(parameter, companions, polarity.flipped, insideConstructorField),
+        transformSorts(result, companions, polarity, insideConstructorField)
+      )
+    case Type.Trait(required, provided) => Type.Trait(
+        transformSorts(required, companions, polarity.flipped, insideConstructorField),
+        transformSorts(provided, companions, polarity, insideConstructorField)
+      )
+    // Σ ⊢ᵖ A ⇒ A′    Σ↑ ⊢ᵖ B ⇒ B′
+    // ────────────────────────────────── ST-All
+    // Σ ⊢ᵖ ∀(α ∗ A). B ⇒ ∀(α ∗ A′). B′
+    // Σ↑ shifts the sort slots beneath the new, distinct binder.
+    case Type.ForAll(bound, body) => Type.ForAll(
+        transformSorts(bound, companions, polarity, insideConstructorField),
+        transformSorts(body, companions.map { case (negative, positive) =>
+          (negative + 1) -> (positive + 1)
+        }, polarity, insideConstructorField)
+      )
     // Σ ⊢ᵖ A ⇒ A′    Σ ⊢ᵖ B ⇒ B′
     // ─────────────────────────── ST-And
     // Σ ⊢ᵖ A ∧ B ⇒ A′ ∧ B′
-    case Type.Intersection(leftType, rightType) =>
-      for {
-        transformedLeft <- transformSorts(leftType, sortMappings, polarity, insideConstructorField)
-        transformedRight <- transformSorts(rightType, sortMappings, polarity, insideConstructorField)
-      } yield Type.Intersection(transformedLeft, transformedRight)
-
+    case Type.Intersection(left, right) => Type.intersection(
+        transformSorts(left, companions, polarity, insideConstructorField),
+        transformSorts(right, companions, polarity, insideConstructorField)
+      )
     // Σ ⊢ᵖᶜᵃᵖ⁽ℓ⁾ A ⇒ A′
     // ─────────────────────── ST-Record
     // Σ ⊢ᵖ {ℓ : A} ⇒ {ℓ : A′}
     case Type.Record(label, fieldType) =>
-      transformSorts(
-        fieldType,
-        sortMappings,
-        polarity,
-        insideConstructorField = label.headOption.exists(_.isUpper)
-      ).map(Type.Record(label, _))
-
-    // Σ ⊢ᶠˡⁱᵖ⁽ᵖ⁾ A ⇒ A′    Σ ⊢ᵖ B ⇒ B′
-    // ─────────────────────────────────────── ST-Trait
-    // Σ ⊢ᵖ Trait[A, B] ⇒ Trait[A′, B′]
-    case Type.Trait(requiredInterface, providedInterface) =>
-      for {
-        transformedRequired <- transformSorts(
-          requiredInterface,
-          sortMappings,
-          polarity.flipped,
-          insideConstructorField
-        )
-        transformedProvided <- transformSorts(
-          providedInterface,
-          sortMappings,
-          polarity,
-          insideConstructorField
-        )
-      } yield Type.Trait(transformedRequired, transformedProvided)
-
-    case signatureApplication @ Type.SignatureApplication(_, _) =>
-      Result.Err(TypeExpansionError.UnexpectedSignatureApplication(signatureApplication))
-  }
-
-  private def freshPositiveParameters(
-    sortParameters: List[String],
-    unavailableNames: Set[String]
-  ): List[String] = {
-    sortParameters.foldLeft((List.empty[String], unavailableNames)) {
-      case ((generated, unavailable), sortParameter) =>
-        val positiveParameter = Type.freshName(s"${sortParameter}Positive", unavailable)
-        (generated :+ positiveParameter, unavailable + positiveParameter)
-    }._1
+      Type.Record(label, transformSorts(fieldType, companions, polarity, label.headOption.exists(_.isUpper)))
   }
 }

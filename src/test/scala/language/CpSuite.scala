@@ -1,8 +1,10 @@
 package cp.language
 
 import cp.fiobs.runtime.Value
+import cp.language.{Cp as Language}
 import cp.language.compilation.CpSourceFile
-import cp.language.core.Type
+import cp.language.core.Module
+import cp.language.typing.Type
 import cp.language.elaboration.{CpElaborationError, ModuleDefinitionVisibility}
 import cp.language.evaluation.CpEvaluationError
 import cp.naming.Namespace
@@ -15,18 +17,18 @@ class CpSuite extends munit.FunSuite {
   private val testNamespace = Namespace("Test")
 
   private object Cp {
-    def parse(source: String) = _root_.cp.language.Cp.parse(source)
+    def parse(source: String) = Language.parse(source)
 
-    def elaborate(module: cp.language.core.Module) = {
-      _root_.cp.language.Cp.elaborate(module, testNamespace)
+    def elaborate(module: Module) = {
+      Language.elaborate(module, testNamespace)
     }
 
     def compile(source: String) = {
-      _root_.cp.language.Cp.compile(CpSourceFile(Paths.get("Test.cp"), source))
+      Language.compile(CpSourceFile(Paths.get("Test.cp"), source))
     }
 
     def evaluate(source: String) = {
-      _root_.cp.language.Cp.evaluate(CpSourceFile(Paths.get("Test.cp"), source))
+      Language.evaluate(CpSourceFile(Paths.get("Test.cp"), source))
     }
   }
 
@@ -232,13 +234,13 @@ class CpSuite extends munit.FunSuite {
         |def main: Int = loop(0);
         |""".stripMargin
 
-    assertEquals(
-      Cp.compile(source),
-      Result.Err(CpCompilationError.Elaboration(
-        testNamespace,
-        CpElaborationError.RecursiveDeclarationRequiresType("loop")
-      ))
-    )
+    Cp.compile(source) match {
+      case Result.Err(CpCompilationError.Elaboration(`testNamespace`, error)) =>
+        assertEquals(error.underlying, CpElaborationError.RecursiveDeclarationRequiresType("loop"))
+        val span = error.location.getOrElse(fail("recursive use should retain its source location"))
+        assertEquals(source.substring(span.startOffset, span.endOffset), "loop(value)")
+      case other => fail(s"expected a recursive declaration error, received: $other")
+    }
   }
 
   test("mutually recursive top-level definitions share a generated record fixpoint") {
@@ -255,17 +257,11 @@ class CpSuite extends munit.FunSuite {
 
     Cp.compile(source) match {
       case Result.Ok(module) =>
-        val mutualBinding = module.elaboratedModule.termDefinitions.values.collectFirst {
-          case definition
-              if definition.visibility == ModuleDefinitionVisibility.Internal &&
-                definition.identifier.name.startsWith("$mutual_") => definition
-        }.getOrElse(fail("the mutual-recursion bundle was not generated"))
-        assert(mutualBinding.identifier.name.matches("\\$mutual_[0-9a-f]{8,}"))
-        mutualBinding.initializer match {
-          case cp.fiobs.Expr.Fix(selfName, _, cp.fiobs.Expr.Merge(_, _)) =>
-            assert(selfName.matches("\\$mutual_self_[0-9a-f]{8,}"))
-          case other => fail(s"unexpected mutual-recursion initializer: $other")
-        }
+        val internalDefinitions = module.elaboratedModule.termDefinitions.values.filter(
+          _.visibility == ModuleDefinitionVisibility.Internal
+        ).toList
+        assertEquals(internalDefinitions.size, 1)
+        assert(!module.elaboratedModule.header.termSignatures.contains(internalDefinitions.head.identifier))
         assertEquals(
           module.elaboratedModule.header.termSignatures.keySet.map(_.name),
           Set("even", "odd", "main")

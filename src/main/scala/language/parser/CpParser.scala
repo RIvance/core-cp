@@ -6,13 +6,13 @@ import cp.primitive.{BinaryOperator, PrimitiveValue}
 import cp.source.SourceSpan
 import cp.util.Result
 
+import java.util.regex.Pattern
 import scala.util.matching.Regex
 import scala.util.parsing.combinator.RegexParsers
 import scala.util.parsing.input.CharSequenceReader
 
 enum ParsingError {
   case Syntax(message: String, line: Int, column: Int)
-  case SignatureUsedAsOrdinaryTypeApplication(signatureName: String)
 }
 
 /**
@@ -26,8 +26,8 @@ object CpParser extends RegexParsers {
   }
 
   private enum ParsedLocalBinding {
-    case Ordinary(name: String, declaredType: Option[Type], initializer: Expression)
-    case Recursive(name: String, declaredType: Type, initializer: Expression)
+    case Ordinary(name: String, declaredType: Option[TypeSyntax], initializer: Expression)
+    case Recursive(name: String, declaredType: TypeSyntax, initializer: Expression)
 
     def wrap(body: Expression): Expression = this match {
       case Ordinary(name, declaredType, initializer) =>
@@ -37,24 +37,28 @@ object CpParser extends RegexParsers {
     }
   }
 
+  private final case class ParsedTypeBinder(name: String, disjointBound: Option[TypeSyntax]) {
+    def toCore: TypeBinder = TypeBinder(name, disjointBound.getOrElse(TypeSyntax.Top))
+  }
+
   private final case class ParsedTermDeclarationHeader(
     name: String,
-    binders: List[TypeBinder],
+    binders: List[ParsedTypeBinder],
     parameters: List[ValueParameter],
-    leadingResult: Option[Type],
+    leadingResult: Option[TypeSyntax],
     whereBounds: List[TypeBinder]
   )
 
   private final case class ParsedFieldMemberHeader(
     label: String,
     parameters: List[ValueParameter],
-    resultType: Option[Type]
+    resultType: Option[TypeSyntax]
   )
 
   private final case class ParsedMethodPatternHeader(
     constructorName: String,
     constructorParameters: List[PatternParameter],
-    selfRequirement: Option[Type],
+    selfRequirement: Option[TypeSyntax],
     label: String,
     valueParameters: List[ValueParameter]
   )
@@ -98,7 +102,7 @@ object CpParser extends RegexParsers {
 
   private[language] def parseModuleWithSourceSpans(source: String): Result[Module, ParsingError] = {
     parseAll(compilationUnit, source) match {
-      case Success(module, _) => validateDelimiterDiscipline(module)
+      case Success(module, _) => Result.Ok(module)
       case failure: NoSuccess =>
         Result.Err(ParsingError.Syntax(
           failure.msg,
@@ -157,7 +161,7 @@ object CpParser extends RegexParsers {
     } yield Declaration.TypeSignature(
       name,
       sortParameters.getOrElse(Nil),
-      requiredInterface.getOrElse(Type.Top),
+      requiredInterface.getOrElse(TypeSyntax.Top),
       providedInterface
     )
   }
@@ -215,7 +219,7 @@ object CpParser extends RegexParsers {
         binderChunks.flatten,
         whereBounds.getOrElse(Nil),
         selfRequirement,
-        inheritedTrait.getOrElse(Expression.Top),
+        inheritedTrait,
         body
       )
     } yield declaration
@@ -225,17 +229,21 @@ object CpParser extends RegexParsers {
     methodPattern <~ opt(";") ^^ Declaration.Method.apply
   }
 
-  private def typeParameterChunk: Parser[List[TypeBinder]] = {
-    ("[" ~> rep1sep(typeBinder, ",") <~ "]") |
-      ("(" ~> disjointClause <~ ")" ^^ (List(_))) |
-      (identifier ^^ (name => List(TypeBinder(name, Type.Top))))
+  private def typeParameterChunk: Parser[List[ParsedTypeBinder]] = {
+    ("[" ~> rep1sep(parsedTypeBinder, ",") <~ "]") |
+      ("(" ~> disjointClause <~ ")" ^^ { binder =>
+        List(ParsedTypeBinder(binder.name, Some(binder.disjointBound)))
+      }) |
+      (identifier ^^ (name => List(ParsedTypeBinder(name, None))))
   }
 
-  private def typeBinder: Parser[TypeBinder] = {
+  private def parsedTypeBinder: Parser[ParsedTypeBinder] = {
     identifier ~ opt("*" ~> inputType) ^^ {
-      case name ~ bound => TypeBinder(name, bound.getOrElse(Type.Top))
+      case name ~ bound => ParsedTypeBinder(name, bound)
     }
   }
+
+  private def typeBinder: Parser[TypeBinder] = parsedTypeBinder ^^ (_.toCore)
 
   private def whereClause: Parser[List[TypeBinder]] = {
     "where" ~> rep1sep(disjointClause, "and" | ",")
@@ -259,12 +267,12 @@ object CpParser extends RegexParsers {
 
   private def normalizedTermDeclaration(
     name: String,
-    initialBinders: List[TypeBinder],
+    initialBinders: List[ParsedTypeBinder],
     parameters: List[ValueParameter],
-    leadingResult: Option[Type],
+    leadingResult: Option[TypeSyntax],
     whereBounds: List[TypeBinder],
     body: Expression,
-    trailingResult: Option[Type]
+    trailingResult: Option[TypeSyntax]
   ): Parser[Declaration] = {
     if (leadingResult.nonEmpty && trailingResult.nonEmpty) {
       failure("a declaration may have only one result annotation")
@@ -274,25 +282,25 @@ object CpParser extends RegexParsers {
         case Result.Ok(binders) =>
           val lambda = Expression.curriedLambda(parameters, body)
           val resultType = leadingResult.orElse(trailingResult)
-          val annotatedLambda = resultType match {
-            case Some(result) =>
-              val completeType = parameters.reverse.foldLeft(result: Type) { (currentResult, parameter) =>
-                Type.Arrow(parameter.parameterType, currentResult)
-              }
-              Expression.Annotation(lambda, completeType)
-            case None => lambda
+          val declaredType = resultType.map { result =>
+            val functionType = parameters.reverse.foldLeft(result) { (currentResult, parameter) =>
+              TypeSyntax.Arrow(parameter.parameterType, currentResult)
+            }
+            binders.reverse.foldLeft(functionType) { (bodyType, binder) =>
+              TypeSyntax.ForAll(binder.name, binder.disjointBound, bodyType)
+            }
           }
-          success(Declaration.Term(name, Expression.typeAbstractions(binders, annotatedLambda)))
+          success(Declaration.Term(name, Expression.typeAbstractions(binders, lambda), declaredType))
       }
     }
   }
 
   private def normalizedImplementationDeclaration(
     name: String,
-    initialBinders: List[TypeBinder],
+    initialBinders: List[ParsedTypeBinder],
     whereBounds: List[TypeBinder],
-    selfRequirement: Type,
-    inheritedTrait: Expression,
+    selfRequirement: TypeSyntax,
+    inheritedTrait: Option[Expression],
     body: Expression
   ): Parser[Declaration] = {
     normalizeBinders(initialBinders, whereBounds) match {
@@ -301,19 +309,20 @@ object CpParser extends RegexParsers {
         val traitExpression = Expression.Trait(
           "self",
           selfRequirement,
-          Type.Top,
+          TypeSyntax.Top,
           inheritedTrait,
           body
         )
         success(Declaration.Term(
           name,
-          Expression.typeAbstractions(binders, traitExpression)
+          Expression.typeAbstractions(binders, traitExpression),
+          None
         ))
     }
   }
 
   private def normalizeBinders(
-    initialBinders: List[TypeBinder],
+    initialBinders: List[ParsedTypeBinder],
     whereBounds: List[TypeBinder]
   ): Result[List[TypeBinder], String] = {
     val duplicateInitial = initialBinders.groupBy(_.name).collectFirst {
@@ -331,27 +340,26 @@ object CpParser extends RegexParsers {
           case Some(bound) => Result.Err(s"where clause refers to undeclared binder: ${bound.name}")
           case None =>
             val whereByName = whereBounds.map(bound => bound.name -> bound.disjointBound).toMap
-            Result.Ok(initialBinders.map { binder =>
-              whereByName.get(binder.name) match {
-                case Some(bound) if binder.disjointBound != Type.Top => binder
-                case Some(bound) => TypeBinder(binder.name, bound)
-                case None => binder
-              }
-            })
+            initialBinders.find(binder => binder.disjointBound.nonEmpty && whereByName.contains(binder.name)) match {
+              case Some(binder) => Result.Err(s"multiple disjointness bounds for type binder: ${binder.name}")
+              case None => Result.Ok(initialBinders.map { binder =>
+                binder.copy(disjointBound = binder.disjointBound.orElse(whereByName.get(binder.name))).toCore
+              })
+            }
         }
     }
   }
 
-  private def inputType: Parser[Type] = {
+  private def inputType: Parser[TypeSyntax] = {
     forallType | arrowType
   }
 
-  private def forallType: Parser[Type] = {
+  private def forallType: Parser[TypeSyntax] = {
     forallToken ~> (
       preferredTypeAbstractionBinder ~ ("->" ~> inputType) |
       rawTypeAbstractionBinder ~ ("." ~> inputType)
     ) ^^ {
-      case binder ~ bodyType => Type.ForAll(binder.name, binder.disjointBound, bodyType)
+      case binder ~ bodyType => TypeSyntax.ForAll(binder.name, binder.disjointBound, bodyType)
     }
   }
 
@@ -359,67 +367,66 @@ object CpParser extends RegexParsers {
     word("forall") | "∀"
   }
 
-  private def arrowType: Parser[Type] = {
+  private def arrowType: Parser[TypeSyntax] = {
     intersectionType ~ opt("->" ~> inputType) ^^ {
-      case parameterType ~ Some(resultType) => Type.Arrow(parameterType, resultType)
+      case parameterType ~ Some(resultType) => TypeSyntax.Arrow(parameterType, resultType)
       case completeType ~ None => completeType
     }
   }
 
-  private def intersectionType: Parser[Type] = {
+  private def intersectionType: Parser[TypeSyntax] = {
     rep1sep(atomicType, "&") ^^ { types =>
-      types.tail.foldLeft(types.head: Type)(Type.Intersection(_, _))
+      types.tail.foldLeft(types.head: TypeSyntax)(TypeSyntax.Intersection(_, _))
     }
   }
 
-  private def atomicType: Parser[Type] = {
+  private def atomicType: Parser[TypeSyntax] = {
     primitiveType |
     traitType |
     recordType |
-    (word("Top") ^^^ Type.Top) |
-    (word("Bottom") ^^^ Type.Bottom) |
-    ("⊤" ^^^ Type.Top) |
-    ("⊥" ^^^ Type.Bottom) |
+    (word("Top") ^^^ TypeSyntax.Top) |
+    (word("Bottom") ^^^ TypeSyntax.Bottom) |
+    ("⊤" ^^^ TypeSyntax.Top) |
+    ("⊥" ^^^ TypeSyntax.Bottom) |
     namedType |
     ("(" ~> inputType <~ ")")
   }
 
-  private def primitiveType: Parser[Type] = {
-    (word("Int") ^^^ Type.Integer) |
-    (word("Float") ^^^ Type.Decimal) |
-    (word("Decimal") ^^^ Type.Decimal) |
-    (word("Bool") ^^^ Type.Boolean) |
-    (word("String") ^^^ Type.Text) |
-    (word("Text") ^^^ Type.Text) |
-    (word("Unit") ^^^ Type.Unit)
+  private def primitiveType: Parser[TypeSyntax] = {
+    (word("Int") ^^^ TypeSyntax.Integer) |
+    (word("Float") ^^^ TypeSyntax.Decimal) |
+    (word("Decimal") ^^^ TypeSyntax.Decimal) |
+    (word("Bool") ^^^ TypeSyntax.Boolean) |
+    (word("String") ^^^ TypeSyntax.Text) |
+    (word("Text") ^^^ TypeSyntax.Text) |
+    (word("Unit") ^^^ TypeSyntax.Unit)
   }
 
-  private def traitType: Parser[Type] = {
+  private def traitType: Parser[TypeSyntax] = {
     "Trait" ~> "[" ~> rep1sep(inputType, ",") <~ "]" >> {
-      case providedInterface :: Nil => success(Type.Trait(Type.Top, providedInterface))
+      case providedInterface :: Nil => success(TypeSyntax.Trait(TypeSyntax.Top, providedInterface))
       case requiredInterface :: providedInterface :: Nil =>
-        success(Type.Trait(requiredInterface, providedInterface))
+        success(TypeSyntax.Trait(requiredInterface, providedInterface))
       case _ => failure("Trait expects one or two type arguments")
     }
   }
 
-  private def recordType: Parser[Type] = {
+  private def recordType: Parser[TypeSyntax] = {
     "{" ~> rep1(recordTypeField <~ opt(";")) <~ "}" ^^ { fields =>
-      Type.records(fields.head, fields.tail)
+      TypeSyntax.records(fields.head, fields.tail)
     }
   }
 
-  private def recordTypeField: Parser[(String, Type)] = {
+  private def recordTypeField: Parser[(String, TypeSyntax)] = {
     identifier ~ (":" ~> inputType) ^^ {
       case label ~ fieldType => label -> fieldType
     }
   }
 
-  private def namedType: Parser[Type] = {
+  private def namedType: Parser[TypeSyntax] = {
     nameReference ~ opt("<" ~> rep1sep(sortArgument, ",") <~ ">") ^^ {
-      case reference ~ Some(arguments) => Type.SignatureApplication(reference, arguments)
-      case NameReference.Unqualified(name) ~ None => Type.Variable(name)
-      case (reference @ NameReference.Qualified(_)) ~ None => Type.Named(reference)
+      case reference ~ Some(arguments) => TypeSyntax.SignatureApplication(reference, arguments)
+      case reference ~ None => TypeSyntax.Reference(reference)
     }
   }
 
@@ -492,7 +499,7 @@ object CpParser extends RegexParsers {
   private def localBinding(
     bindingKind: LocalBindingKind,
     name: String,
-    declaredType: Option[Type],
+    declaredType: Option[TypeSyntax],
     initializer: Expression,
     body: Expression
   ): Parser[Expression] = {
@@ -537,7 +544,7 @@ object CpParser extends RegexParsers {
 
   private def rawTypeAbstractionBinder: Parser[TypeBinder] = {
     ("(" ~> disjointClause <~ ")") |
-      (identifier ^^ (name => TypeBinder(name, Type.Top)))
+      (identifier ^^ (name => TypeBinder(name, TypeSyntax.Top)))
   }
 
   private def traitExpression: Parser[Expression] = {
@@ -550,14 +557,14 @@ object CpParser extends RegexParsers {
       body <- memberBlock
     } yield Expression.Trait(
       "self",
-      selfRequirement.getOrElse(Type.Top),
-      providedInterface.getOrElse(Type.Top),
-      inheritedTrait.getOrElse(Expression.Top),
+      selfRequirement.getOrElse(TypeSyntax.Top),
+      providedInterface.getOrElse(TypeSyntax.Top),
+      inheritedTrait,
       body
     )
   }
 
-  private def selfClause: Parser[Type] = {
+  private def selfClause: Parser[TypeSyntax] = {
     "[" ~> "self" ~> ":" ~> inputType <~ "]"
   }
 
@@ -741,15 +748,12 @@ object CpParser extends RegexParsers {
       body <- declarationBodyExpression
     } yield {
       val lambda = Expression.curriedLambda(header.parameters, body)
-      val value = header.resultType match {
-        case Some(result) =>
-          val completeType = header.parameters.reverse.foldLeft(result: Type) { (currentResult, parameter) =>
-            Type.Arrow(parameter.parameterType, currentResult)
-          }
-          Expression.Annotation(lambda, completeType)
-        case None => lambda
+      val declaredType = header.resultType.map { result =>
+        header.parameters.reverse.foldLeft(result) { (currentResult, parameter) =>
+          TypeSyntax.Arrow(parameter.parameterType, currentResult)
+        }
       }
-      Member.Field(header.label, value)
+      Member.Field(header.label, lambda, declaredType)
     }
   }
 
@@ -880,7 +884,7 @@ object CpParser extends RegexParsers {
   private def parsedLocalBinding(
     bindingKind: LocalBindingKind,
     name: String,
-    declaredType: Option[Type],
+    declaredType: Option[TypeSyntax],
     initializer: Expression
   ): Parser[ParsedLocalBinding] = bindingKind match {
     case LocalBindingKind.Ordinary =>
@@ -913,10 +917,16 @@ object CpParser extends RegexParsers {
   }
 
   private def textLiteral: Parser[Expression] = {
-    """"(?:[^"\\]|\\.)*"""".r ^^ { quoted =>
-      Expression.Literal(PrimitiveValue.Text(StringContext.processEscapes(
-        quoted.substring(1, quoted.length - 1)
-      )))
+    (input: Input) => {
+      regex(""""(?:[^"\\]|\\.)*"""".r)(input) match {
+        case Success(quoted, next) => TextLiteral.decode(quoted.substring(1, quoted.length - 1)) match {
+          case Result.Ok(value) => Success(Expression.Literal(PrimitiveValue.Text(value)), next)
+          case Result.Err(error) =>
+            val startOffset = handleWhiteSpace(input.source, input.offset)
+            Error(error.message, input.drop(startOffset - input.offset + 1 + error.offset))
+        }
+        case failure: NoSuccess => failure
+      }
     }
   }
 
@@ -931,92 +941,8 @@ object CpParser extends RegexParsers {
   }
 
   private def word(value: String): Parser[String] = {
-    (java.util.regex.Pattern.quote(value) + "(?![A-Za-z0-9_])").r
+    (Pattern.quote(value) + "(?![A-Za-z0-9_])").r
   }
 
   private def assignmentToken: Parser[String] = "=(?!=|>)".r
-
-  private def validateDelimiterDiscipline(module: Module): Result[Module, ParsingError] = {
-    val signatureNames = module.definitions.collect {
-      case Declaration.TypeSignature(name, sortParameters, _, _) if sortParameters.nonEmpty => name
-    }.toSet
-
-    findSignatureTypeApplication(module, signatureNames) match {
-      case Some(signatureName) =>
-        Result.Err(ParsingError.SignatureUsedAsOrdinaryTypeApplication(signatureName))
-      case None => Result.Ok(module)
-    }
-  }
-
-  private def findSignatureTypeApplication(
-    module: Module,
-    signatureNames: Set[String]
-  ): Option[String] = {
-    module.definitions.iterator.map {
-      case Declaration.Term(_, initializer) =>
-        findSignatureTypeApplication(initializer, signatureNames)
-      case Declaration.Method(member) =>
-        findSignatureTypeApplication(member, signatureNames)
-      case Declaration.TypeSignature(_, _, _, _) => None
-    }.collectFirst { case Some(name) => name }
-  }
-
-  private def findSignatureTypeApplication(
-    member: Member,
-    signatureNames: Set[String]
-  ): Option[String] = member match {
-    case Member.Field(_, value) => findSignatureTypeApplication(value, signatureNames)
-    case Member.MethodPattern(_, _, _, _, _, body) =>
-      findSignatureTypeApplication(body, signatureNames)
-  }
-
-  private def findSignatureTypeApplication(
-    expression: Expression,
-    signatureNames: Set[String]
-  ): Option[String] = expression match {
-    case Expression.Located(inner, _) => findSignatureTypeApplication(inner, signatureNames)
-    case Expression.TypeApplication(
-          Expression.Variable(NameReference.Unqualified(name)),
-          _
-        ) if signatureNames.contains(name) =>
-      Some(name)
-    case Expression.Lambda(_, body) => findSignatureTypeApplication(body, signatureNames)
-    case Expression.Application(function, argument) =>
-      findSignatureTypeApplication(function, signatureNames)
-        .orElse(findSignatureTypeApplication(argument, signatureNames))
-    case Expression.TypeLambda(_, body) => findSignatureTypeApplication(body, signatureNames)
-    case Expression.TypeApplication(function, _) => findSignatureTypeApplication(function, signatureNames)
-    case Expression.Merge(left, right) =>
-      findSignatureTypeApplication(left, signatureNames)
-        .orElse(findSignatureTypeApplication(right, signatureNames))
-    case Expression.Record(members) =>
-      members.iterator.map(findSignatureTypeApplication(_, signatureNames))
-        .collectFirst { case Some(name) => name }
-    case Expression.Projection(record, _) => findSignatureTypeApplication(record, signatureNames)
-    case Expression.Annotation(inner, _) => findSignatureTypeApplication(inner, signatureNames)
-    case Expression.Let(_, _, initializer, body) =>
-      findSignatureTypeApplication(initializer, signatureNames)
-        .orElse(findSignatureTypeApplication(body, signatureNames))
-    case Expression.RecursiveLet(_, _, initializer, body) =>
-      findSignatureTypeApplication(initializer, signatureNames)
-        .orElse(findSignatureTypeApplication(body, signatureNames))
-    case Expression.Open(record, body) =>
-      findSignatureTypeApplication(record, signatureNames)
-        .orElse(findSignatureTypeApplication(body, signatureNames))
-    case Expression.New(traitExpression) => findSignatureTypeApplication(traitExpression, signatureNames)
-    case Expression.Forward(traitExpression, selfArgument) =>
-      findSignatureTypeApplication(traitExpression, signatureNames)
-        .orElse(findSignatureTypeApplication(selfArgument, signatureNames))
-    case Expression.Trait(_, _, _, inheritedTrait, body) =>
-      findSignatureTypeApplication(inheritedTrait, signatureNames)
-        .orElse(findSignatureTypeApplication(body, signatureNames))
-    case Expression.Binary(_, left, right) =>
-      findSignatureTypeApplication(left, signatureNames)
-        .orElse(findSignatureTypeApplication(right, signatureNames))
-    case Expression.If(condition, whenTrue, whenFalse) =>
-      findSignatureTypeApplication(condition, signatureNames)
-        .orElse(findSignatureTypeApplication(whenTrue, signatureNames))
-        .orElse(findSignatureTypeApplication(whenFalse, signatureNames))
-    case Expression.Literal(_) | Expression.Variable(_) | Expression.Top => None
-  }
 }

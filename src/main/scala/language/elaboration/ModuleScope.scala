@@ -1,6 +1,7 @@
 package cp.language.elaboration
 
 import cp.language.core.{Declaration, ImportDeclaration, Module}
+import cp.language.typing.Type
 import cp.naming.{Identifier, NameReference, Namespace}
 import cp.util.Result
 
@@ -11,41 +12,64 @@ enum NameResolutionError {
   case ModuleNotImported(namespace: Namespace)
   case UnknownTerm(reference: NameReference)
   case UnknownType(reference: NameReference)
+  case KindMismatch(reference: NameReference, expected: NameKind, actual: NameKind, candidates: List[Identifier])
   case AmbiguousTerm(name: String, candidates: List[Identifier])
   case AmbiguousType(name: String, candidates: List[Identifier])
 }
 
-/** Owns the absolute and unqualified visibility rules for one module. */
-final case class ModuleScope private (
-  namespace: Namespace,
-  currentTermIdentifiers: Map[String, Identifier],
-  currentTypeIdentifiers: Map[String, Identifier],
+enum NameKind {
+  case Term, Type
+
+  def other: NameKind = this match {
+    case Term => Type
+    case Type => Term
+  }
+}
+
+/** Visibility within one of CP's two independent name spaces. */
+private final case class NameBindings(
+  current: Map[String, Identifier],
+  explicitImports: Map[String, Set[Identifier]],
+  wildcardImports: Map[String, Set[Identifier]],
+  importedIdentifiers: Set[Identifier]
+) {
+  def unqualified(name: String): Set[Identifier] = {
+    current.get(name).map(Set(_))
+      .orElse(explicitImports.get(name).filter(_.nonEmpty))
+      .orElse(wildcardImports.get(name)).getOrElse(Set.empty)
+  }
+
+  def contains(identifier: Identifier, currentNamespace: Namespace): Boolean = {
+    if (identifier.scope == currentNamespace) current.get(identifier.name).contains(identifier)
+    else importedIdentifiers.contains(identifier)
+  }
+}
+
+/** Owns visibility, ambiguity, and kind checking for module names. */
+final class ModuleScope private (
+  val namespace: Namespace,
   importedHeaders: Map[Namespace, ElaboratedModuleHeader],
   authorizedModules: Set[Namespace],
-  explicitTermImports: Map[String, Set[Identifier]],
-  explicitTypeImports: Map[String, Set[Identifier]],
-  wildcardTermImports: Map[String, Set[Identifier]],
-  wildcardTypeImports: Map[String, Set[Identifier]]
+  terms: NameBindings,
+  types: NameBindings
 ) {
-  def resolveTerm(reference: NameReference): Result[Identifier, NameResolutionError] = reference match {
-    case NameReference.Unqualified(name) =>
-      currentTermIdentifiers.get(name) match {
-        case Some(identifier) => Result.Ok(identifier)
-        case None => resolveImportedTerm(name)
-      }
-    case NameReference.Qualified(identifier) => resolveQualifiedTerm(identifier)
+  def resolveTerm(reference: NameReference): Result[Identifier, NameResolutionError] = {
+    resolve(reference, NameKind.Term)
   }
 
-  def resolveType(reference: NameReference): Result[Identifier, NameResolutionError] = reference match {
-    case NameReference.Unqualified(name) =>
-      currentTypeIdentifiers.get(name) match {
-        case Some(identifier) => Result.Ok(identifier)
-        case None => resolveImportedType(name)
-      }
-    case NameReference.Qualified(identifier) => resolveQualifiedType(identifier)
+  def resolveType(reference: NameReference): Result[Identifier, NameResolutionError] = {
+    resolve(reference, NameKind.Type)
   }
 
-  def importedTermSignatures: Map[Identifier, cp.language.core.Type] = {
+  /** Optional lookup does not reinterpret a name from the other name space. */
+  def findTerm(reference: NameReference): Result[Option[Identifier], NameResolutionError] = {
+    candidates(reference, NameKind.Term).flatMap { found =>
+      if (found.isEmpty) Result.Ok(None)
+      else unique(reference, NameKind.Term, found).map(Some(_))
+    }
+  }
+
+  def importedTermSignatures: Map[Identifier, Type] = {
     importedHeaders.valuesIterator.flatMap(_.termSignatures).toMap
   }
 
@@ -53,76 +77,51 @@ final case class ModuleScope private (
     importedHeaders.valuesIterator.flatMap(_.typeDefinitions).toMap
   }
 
-  private def resolveImportedTerm(name: String): Result[Identifier, NameResolutionError] = {
-    explicitTermImports.get(name).filter(_.nonEmpty) match {
-      case Some(candidates) => uniqueTerm(name, candidates)
-      case None => wildcardTermImports.get(name) match {
-        case Some(candidates) => uniqueTerm(name, candidates)
-        case None => Result.Err(NameResolutionError.UnknownTerm(NameReference.Unqualified(name)))
+  private def resolve(reference: NameReference, expected: NameKind): Result[Identifier, NameResolutionError] = {
+    candidates(reference, expected).flatMap { found =>
+      if (found.nonEmpty) unique(reference, expected, found)
+      else candidates(reference, expected.other).flatMap { alternatives =>
+        if (alternatives.nonEmpty) {
+          Result.Err(NameResolutionError.KindMismatch(
+            reference, expected, expected.other, alternatives.toList.sorted
+          ))
+        } else Result.Err(expected match {
+          case NameKind.Term => NameResolutionError.UnknownTerm(reference)
+          case NameKind.Type => NameResolutionError.UnknownType(reference)
+        })
       }
     }
   }
 
-  private def resolveImportedType(name: String): Result[Identifier, NameResolutionError] = {
-    explicitTypeImports.get(name).filter(_.nonEmpty) match {
-      case Some(candidates) => uniqueType(name, candidates)
-      case None => wildcardTypeImports.get(name) match {
-        case Some(candidates) => uniqueType(name, candidates)
-        case None => Result.Err(NameResolutionError.UnknownType(NameReference.Unqualified(name)))
+  private def candidates(reference: NameReference, kind: NameKind): Result[Set[Identifier], NameResolutionError] = {
+    val bindings = kind match {
+      case NameKind.Term => terms
+      case NameKind.Type => types
+    }
+    reference match {
+      case NameReference.Unqualified(name) => Result.Ok(bindings.unqualified(name))
+      case NameReference.Qualified(identifier) =>
+        if (identifier.scope != namespace && !authorizedModules.contains(identifier.scope)) {
+          Result.Err(NameResolutionError.ModuleNotImported(identifier.scope))
+        } else Result.Ok(if (bindings.contains(identifier, namespace)) Set(identifier) else Set.empty)
+    }
+  }
+
+  private def unique(
+    reference: NameReference,
+    kind: NameKind,
+    found: Set[Identifier]
+  ): Result[Identifier, NameResolutionError] = found.toList.sorted match {
+    case identifier :: Nil => Result.Ok(identifier)
+    case ambiguous =>
+      val name = reference match {
+        case NameReference.Unqualified(name) => name
+        case NameReference.Qualified(identifier) => identifier.name
       }
-    }
-  }
-
-  private def resolveQualifiedTerm(identifier: Identifier): Result[Identifier, NameResolutionError] = {
-    if (identifier.scope == namespace) {
-      if (currentTermIdentifiers.contains(identifier.name)) {
-        Result.Ok(identifier)
-      } else {
-        Result.Err(NameResolutionError.UnknownTerm(NameReference.Qualified(identifier)))
-      }
-    } else if (!authorizedModules.contains(identifier.scope)) {
-      Result.Err(NameResolutionError.ModuleNotImported(identifier.scope))
-    } else if (importedHeaders(identifier.scope).termSignatures.contains(identifier)) {
-      Result.Ok(identifier)
-    } else {
-      Result.Err(NameResolutionError.UnknownTerm(NameReference.Qualified(identifier)))
-    }
-  }
-
-  private def resolveQualifiedType(identifier: Identifier): Result[Identifier, NameResolutionError] = {
-    if (identifier.scope == namespace) {
-      if (currentTypeIdentifiers.contains(identifier.name)) {
-        Result.Ok(identifier)
-      } else {
-        Result.Err(NameResolutionError.UnknownType(NameReference.Qualified(identifier)))
-      }
-    } else if (!authorizedModules.contains(identifier.scope)) {
-      Result.Err(NameResolutionError.ModuleNotImported(identifier.scope))
-    } else if (importedHeaders(identifier.scope).typeDefinitions.contains(identifier)) {
-      Result.Ok(identifier)
-    } else {
-      Result.Err(NameResolutionError.UnknownType(NameReference.Qualified(identifier)))
-    }
-  }
-
-  private def uniqueTerm(
-    name: String,
-    candidates: Set[Identifier]
-  ): Result[Identifier, NameResolutionError] = {
-    candidates.toList.sortBy(_.render) match {
-      case identifier :: Nil => Result.Ok(identifier)
-      case ambiguous => Result.Err(NameResolutionError.AmbiguousTerm(name, ambiguous))
-    }
-  }
-
-  private def uniqueType(
-    name: String,
-    candidates: Set[Identifier]
-  ): Result[Identifier, NameResolutionError] = {
-    candidates.toList.sortBy(_.render) match {
-      case identifier :: Nil => Result.Ok(identifier)
-      case ambiguous => Result.Err(NameResolutionError.AmbiguousType(name, ambiguous))
-    }
+      Result.Err(kind match {
+        case NameKind.Term => NameResolutionError.AmbiguousTerm(name, ambiguous)
+        case NameKind.Type => NameResolutionError.AmbiguousType(name, ambiguous)
+      })
   }
 }
 
@@ -132,10 +131,8 @@ object ModuleScope {
     namespace: Namespace,
     importedHeaders: Map[Namespace, ElaboratedModuleHeader]
   ): Result[ModuleScope, NameResolutionError] = {
-    val currentTermIdentifiers = module.definitions.collect {
-      case Declaration.Term(name, _) => name -> namespace.identifier(name)
-      case declaration: Declaration.Method =>
-        declaration.definitionName -> namespace.identifier(declaration.definitionName)
+    val currentTermIdentifiers = module.termMembers.map { member =>
+      member.definitionName -> namespace.identifier(member.definitionName)
     }.toMap
     val currentTypeIdentifiers = module.definitions.collect {
       case Declaration.TypeSignature(name, _, _, _) => name -> namespace.identifier(name)
@@ -143,20 +140,21 @@ object ModuleScope {
 
     validateImports(module.imports, namespace, importedHeaders).map { _ =>
       val authorizedModules = module.imports.map(_.targetNamespace).toSet
-      val explicitTermImports = importedMembers(module.imports, importedHeaders, _.termSignatures.keySet)
-      val explicitTypeImports = importedMembers(module.imports, importedHeaders, _.typeDefinitions.keySet)
-      val wildcardTermImports = wildcardMembers(module.imports, importedHeaders, _.termSignatures.keySet)
-      val wildcardTypeImports = wildcardMembers(module.imports, importedHeaders, _.typeDefinitions.keySet)
-      ModuleScope(
+      def bindings(
+        current: Map[String, Identifier],
+        members: ElaboratedModuleHeader => Set[Identifier]
+      ): NameBindings = NameBindings(
+        current,
+        importedMembers(module.imports, importedHeaders, members),
+        wildcardMembers(module.imports, importedHeaders, members),
+        importedHeaders.valuesIterator.flatMap(members).toSet
+      )
+      new ModuleScope(
         namespace,
-        currentTermIdentifiers,
-        currentTypeIdentifiers,
         importedHeaders,
         authorizedModules,
-        explicitTermImports,
-        explicitTypeImports,
-        wildcardTermImports,
-        wildcardTypeImports
+        bindings(currentTermIdentifiers, _.termSignatures.keySet),
+        bindings(currentTypeIdentifiers, _.typeDefinitions.keySet)
       )
     }
   }
