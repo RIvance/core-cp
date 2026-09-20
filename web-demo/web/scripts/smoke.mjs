@@ -78,6 +78,24 @@ assert.equal(invalid.fiobsResult, null);
 assert.equal(invalid.error.phase, "parse");
 assert.equal(typeof invalid.error.line, "number");
 
+const invalidEscape = workbench.compile('def main = "\\q";', "Main.cp");
+assert.equal(invalidEscape.ok, false);
+assert.equal(invalidEscape.error.phase, "parse");
+assert.match(invalidEscape.error.message, /invalid string escape/);
+assert.equal(invalidEscape.error.column, 13);
+
+const signatureMisuse = workbench.compile(`type Signature<Sort> = { field: Sort };
+def main = Signature[Int];`, "Main.cp");
+assert.equal(signatureMisuse.ok, false);
+assert.equal(signatureMisuse.error.phase, "compile");
+assert.match(signatureMisuse.error.message, /Expected a term.*names a type: Main::Signature/);
+
+const signatureHomonym = workbench.compile(`type Signature<Sort> = { field: Sort };
+def Signature[T](value: T) = value;
+def main = Signature[Int](42);`, "Main.cp");
+assert.equal(signatureHomonym.ok, true, describeFailure(signatureHomonym));
+assert.deepEqual(signatureHomonym.fiobsResult, { ok: true, value: "42" });
+
 const invalidMergeSource = "def main = 1 ,, 2\n";
 const invalidMerge = workbench.compile(invalidMergeSource, "Main.cp");
 assert.equal(invalidMerge.ok, false);

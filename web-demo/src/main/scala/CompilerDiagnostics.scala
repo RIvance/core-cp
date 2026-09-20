@@ -55,8 +55,6 @@ private[visualizer] object CompilerDiagnostics {
 
   private def renderParsingError(error: ParsingError): String = error match {
     case ParsingError.Syntax(message, _, _) => message
-    case ParsingError.SignatureUsedAsOrdinaryTypeApplication(signatureName) =>
-      s"Signature '$signatureName' cannot be used as an ordinary type application."
   }
 
   private def renderCpElaborationError(error: CpElaborationError): String = error match {
@@ -65,12 +63,8 @@ private[visualizer] object CompilerDiagnostics {
       renderNameResolutionError(resolutionError)
     case CpElaborationError.TypeExpansion(expansionError) =>
       renderTypeExpansionError(expansionError)
-    case CpElaborationError.TypeTranslation(translationError) =>
-      renderTypeTranslationError(translationError)
-    case CpElaborationError.UnboundTermVariable(name, scope) =>
-      s"Term '$name' is not in scope.${availableNames(scope)}"
-    case CpElaborationError.CannotInfer(_) =>
-      "Cannot infer the type of this expression; add an explicit type annotation."
+    case CpElaborationError.CheckingShapeMismatch(_, expectedType) =>
+      s"This expression cannot be checked against ${expectedType.render}."
     case CpElaborationError.TypeMismatch(_, actualType, expectedType) =>
       s"Type mismatch: found ${actualType.render}, but expected ${expectedType.render}."
     case CpElaborationError.LambdaParameterMismatch(actualType, expectedType) =>
@@ -123,6 +117,13 @@ private[visualizer] object CompilerDiagnostics {
       s"Unknown term '${reference.render}'."
     case NameResolutionError.UnknownType(reference) =>
       s"Unknown type '${reference.render}'."
+    case NameResolutionError.KindMismatch(reference, expected, actual, candidates) =>
+      def kindName(kind: NameKind): String = kind match {
+        case NameKind.Term => "term"
+        case NameKind.Type => "type"
+      }
+      s"Expected a ${kindName(expected)}, but '${reference.render}' names a ${kindName(actual)}: " +
+        s"${candidates.map(_.render).mkString(", ")}."
     case NameResolutionError.AmbiguousTerm(name, candidates) =>
       s"Term '$name' is ambiguous: ${candidates.map(_.render).mkString(", ")}."
     case NameResolutionError.AmbiguousType(name, candidates) =>
@@ -136,19 +137,7 @@ private[visualizer] object CompilerDiagnostics {
       s"Unknown type signature ${identifier.render}."
     case TypeExpansionError.SignatureArityMismatch(identifier, expected, actual) =>
       s"Signature ${identifier.render} expects $expected type arguments, but received $actual."
-    case TypeExpansionError.UnexpectedNamedType(inputType) =>
-      s"Named type ${inputType.render} remained after type expansion."
-    case TypeExpansionError.UnexpectedSignatureApplication(inputType) =>
-      s"Signature application ${inputType.render} remained after type expansion."
-  }
-
-  private def renderTypeTranslationError(error: TypeTranslationError): String = error match {
-    case TypeTranslationError.UnboundTypeVariable(name, scope) =>
-      s"Type variable '$name' is not in scope.${availableNames(scope)}"
-    case TypeTranslationError.UnexpandedNamedType(reference) =>
-      s"Named type '${reference.render}' was not expanded before Fiobs translation."
-    case TypeTranslationError.UnexpandedSignatureApplication(reference, _) =>
-      s"Signature '${reference.render}' was not expanded before Fiobs translation."
+    case TypeExpansionError.DuplicateSortParameter(name) => s"Sort parameter '$name' is declared more than once."
   }
 
   private def renderFiobsCompilationError(error: FiobsCompilationError): String = error match {
@@ -182,8 +171,9 @@ private[visualizer] object CompilerDiagnostics {
       s"Type argument ${argumentType.render()} is not disjoint from bound ${disjointBound.render()}."
     case TypeError.TypeLambdaBoundMismatch(actualBound, expectedBound) =>
       s"Type-lambda bound ${actualBound.render()} does not match ${expectedBound.render()}."
-    case TypeError.NoPrimitiveSignature(operator, _) =>
-      s"Operator '${operator.symbol}' does not accept these Fiobs operand types."
+    case TypeError.NoPrimitiveSignature(operator, _, candidates) =>
+      val causes = candidates.map(_.cause).distinct.map(renderTypeError).mkString(" ")
+      s"Operator '${operator.symbol}' does not accept these Fiobs operands. $causes"
   }
 
   private def renderFiTrieCompilationError(error: FiTrieCompilationError): String = error match {

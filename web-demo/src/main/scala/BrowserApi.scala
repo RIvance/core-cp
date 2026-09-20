@@ -191,11 +191,6 @@ final class BrowserApi {
   private def compilationFailure(error: CpCompilationError, source: String): js.Object = error match {
     case CpCompilationError.Parsing(_, ParsingError.Syntax(message, line, column)) =>
       failure("parse", message, Some(BrowserSourceRange.point(line, column)))
-    case CpCompilationError.Parsing(
-        _,
-        ParsingError.SignatureUsedAsOrdinaryTypeApplication(_)
-      ) =>
-      failure("parse", CompilerDiagnostics.render(error))
     case other =>
       val sourceRange = CompilerDiagnostics.sourceSpan(other)
         .flatMap(_.resolveIn(source))
