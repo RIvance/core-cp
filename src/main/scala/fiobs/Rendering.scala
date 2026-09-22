@@ -50,6 +50,10 @@ private[fiobs] object FiobsRendering {
             )
           )
         ))
+      case Term.Fold(recursiveType, body) =>
+        Precedence.Prefix -> recursiveOperationDocument("fold", recursiveType, body, scope)
+      case Term.Unfold(recursiveType, inner) =>
+        Precedence.Prefix -> recursiveOperationDocument("unfold", recursiveType, inner, scope)
       case Term.Merge(left, right) =>
         Precedence.Merge -> infixDocument(
           termDocument(left, scope, Precedence.Merge),
@@ -158,6 +162,9 @@ private[fiobs] object FiobsRendering {
           header,
           typeDocument(body, bodyScope, Precedence.Minimum)
         )
+      case Type.Recursive(body) =>
+        val (binder, bodyScope) = scope.bindTypeVariable
+        Precedence.Binding -> bindingDocument(s"μ$binder.", typeDocument(body, bodyScope, Precedence.Minimum))
       case Type.Record(label, fieldType) =>
         Precedence.Atomic -> PrettyDocument.group(PrettyDocument.concatenate(
           PrettyDocument.text(s"{$label : "),
@@ -166,6 +173,20 @@ private[fiobs] object FiobsRendering {
         ))
     }
     parenthesize(precedence < enclosingPrecedence, document)
+  }
+
+  private def recursiveOperationDocument(
+    operation: String,
+    recursiveType: Type,
+    body: Term,
+    scope: RenderingScope
+  ): PrettyDocument = {
+    val header = PrettyDocument.concatenate(
+      PrettyDocument.text(s"$operation["),
+      typeDocument(recursiveType, scope, Precedence.Minimum),
+      PrettyDocument.text("]")
+    )
+    bindingDocument(header, termDocument(body, scope, Precedence.Application + 1))
   }
 
   private def bindingDocument(header: String, body: PrettyDocument): PrettyDocument = {
@@ -299,7 +320,8 @@ private object Precedence {
   val Binary = 3
   val TypeArrow = 2
   val TypeIntersection = 3
-  val Application = 4
-  val Postfix = 5
-  val Atomic = 6
+  val Prefix = 4
+  val Application = 5
+  val Postfix = 6
+  val Atomic = 7
 }

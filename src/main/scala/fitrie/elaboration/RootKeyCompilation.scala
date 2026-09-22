@@ -47,6 +47,11 @@ private[fitrie] object RootKeyCompilation {
     case Type.ForAll(_, _) =>
       RootKeyExpression.concrete(RootKeySet.one(RouteKey.TypeApplication.rootKey))
 
+    // ──────────────────── Keys-Rec
+    // Δ ⊢ μ α. A ⇛ₖ ⟨unfold⟩
+    case Type.Recursive(_) =>
+      RootKeyExpression.concrete(RootKeySet.one(RouteKey.Unfold.rootKey))
+
     // ──────────────── Keys-Record
     // Δ ⊢ {ℓ : A} ⇛ₖ ⟨projℓ⟩
     case Type.Record(label, _) => RootKeyExpression.concrete(

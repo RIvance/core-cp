@@ -72,6 +72,42 @@ const recordMerge = workbench.compile("def main = { l = 1 } ,, { l = true }\n", 
 assert.equal(recordMerge.ok, true, describeFailure(recordMerge));
 assert.deepEqual(recordMerge.fiobsResult, { ok: true, value: "{ l = 1 ,, true }" });
 
+const recursive = workbench.compile(`
+type Wide = μ S. { value: Int; extra: Bool; next: S };
+type Narrow = μ S. { value: Int; next: S };
+def naturals(n: Int): Wide = fold[Wide] { value = n; extra = true; next = naturals(n + 1) };
+def narrow: Narrow = naturals(41);
+def main = (unfold[Narrow] (unfold[Narrow] narrow).next).value;
+`, "Main.cp");
+assert.equal(recursive.ok, true, describeFailure(recursive));
+assert.deepEqual(recursive.fiobsResult, { ok: true, value: "42" });
+state = recursive;
+for (let fuel = 200; fuel > 0 && !state.complete; fuel -= 1) {
+  state = workbench.step();
+  assert.equal(state.ok, true, describeFailure(state));
+}
+assert.equal(state.complete, true, "recursive coercion did not finish within 200 visible steps");
+const recursiveRoot = state.snapshot.nodes.find((node) => node.id === state.snapshot.root);
+assert.ok(recursiveRoot, "recursive evaluation has no final root node");
+assert.deepEqual(recursiveRoot.terminations, [{ key: "int", value: "42" }]);
+
+const foldedValue = workbench.compile("def main = fold[μ X. Int] 42;", "Main.cp");
+assert.equal(foldedValue.ok, true, describeFailure(foldedValue));
+assert.equal(foldedValue.fiobsResult.ok, true);
+assert.match(foldedValue.fiobsResult.value, /^fold\[μ.*Int\] \(42\)$/);
+
+const invalidFold = workbench.compile("def main = fold[Int] 42;", "Main.cp");
+assert.equal(invalidFold.ok, false);
+assert.equal(invalidFold.error.phase, "compile");
+assert.match(invalidFold.error.message, /Expected a recursive type/);
+
+const recursiveInterface = workbench.compile(`
+interface Box { value: Int; }
+def main = (unfold[Box] (fold[Box] { value = 42 })).value;
+`, "Main.cp");
+assert.equal(recursiveInterface.ok, true, describeFailure(recursiveInterface));
+assert.deepEqual(recursiveInterface.fiobsResult, { ok: true, value: "42" });
+
 const invalid = workbench.compile("def main: Int =", "Main.cp");
 assert.equal(invalid.ok, false);
 assert.equal(invalid.fiobsResult, null);

@@ -11,6 +11,7 @@ enum SurfaceType {
   case Arrow(from: SurfaceType, to: SurfaceType)
   case Intersection(left: SurfaceType, right: SurfaceType)
   case ForAll(typeParameter: String, disjointBound: SurfaceType, body: SurfaceType)
+  case Recursive(typeParameter: String, body: SurfaceType)
   case Record(label: String, fieldType: SurfaceType)
 }
 
@@ -28,11 +29,28 @@ enum ApplicableForm {
   case Arrow, Universal
 }
 
-final case class TypeContext private (bounds: List[Type]) {
-  def lookup(index: Int): Option[Type] = bounds.lift(index)
+private enum TypeBinding {
+  case Disjoint(bound: Type)
+  case Recursive
+
+  def shifted: TypeBinding = this match {
+    case Disjoint(bound) => Disjoint(bound.shiftTypeVariables(1))
+    case Recursive => Recursive
+  }
+}
+
+final case class TypeContext private (private val bindings: List[TypeBinding]) {
+  /** Returns only declared disjointness bounds; a recursive variable has no such assumption. */
+  def lookup(index: Int): Option[Type] = bindings.lift(index).collect {
+    case TypeBinding.Disjoint(bound) => bound
+  }
+
+  def contains(index: Int): Boolean = bindings.isDefinedAt(index)
 
   def extend(bound: Type): TypeContext =
-    TypeContext(bound.shiftTypeVariables(1) :: bounds.map(_.shiftTypeVariables(1)))
+    TypeContext(TypeBinding.Disjoint(bound.shiftTypeVariables(1)) :: bindings.map(_.shifted))
+
+  def extendRecursive: TypeContext = TypeContext(TypeBinding.Recursive :: bindings.map(_.shifted))
 
   def accepts(inputType: Type): Boolean = inputType match {
     // ───────────── WF-Primitive
@@ -45,10 +63,10 @@ final case class TypeContext private (bounds: List[Type]) {
     // Δ ⊢ ⊥ ✔
     case Type.Primitive(_) | Type.Top | Type.Bottom => true
 
-    // α ∗ A ∈ Δ
+    // α ∈ dom(Δ)
     // ───────── WF-Var
     // Δ ⊢ α ✔
-    case Type.Variable(index) => lookup(index).nonEmpty
+    case Type.Variable(index) => contains(index)
 
     // Δ ⊢ A ✔    Δ ⊢ B ✔
     // ─────────────────── WF-Arr
@@ -65,6 +83,11 @@ final case class TypeContext private (bounds: List[Type]) {
     // Δ ⊢ ∀(α ∗ A). B ✔
     case Type.ForAll(disjointBound, bodyType) =>
       accepts(disjointBound) && extend(disjointBound).accepts(bodyType)
+
+    // Δ, α ⊢ A ✔
+    // ───────────── WF-Rec
+    // Δ ⊢ μα. A ✔
+    case Type.Recursive(bodyType) => extendRecursive.accepts(bodyType)
 
     // Δ ⊢ A ✔
     // ─────────────── WF-Rcd
@@ -87,46 +110,76 @@ enum Type {
   case Arrow(from: Type, to: Type)
   case Intersection(left: Type, right: Type)
   case ForAll(disjointBound: Type, body: Type)
+  case Recursive(body: Type)
   case Record(label: String, fieldType: Type)
 
   def render(maximumLineWidth: Int = 88): String = {
     FiobsRendering.render(this, maximumLineWidth)
   }
 
-  def shiftTypeVariables(by: Int, cutoff: Int = 0): Type = this match {
-    case Primitive(_) | Top | Bottom => this
-    case Variable(index) =>
-      if (index < cutoff) {
-        this
-      } else {
-        val shiftedIndex = index + by
-        require(shiftedIndex >= 0, s"de Bruijn shift would create negative index: $index + $by")
-        Variable(shiftedIndex)
-      }
-    case Arrow(from, to) =>
-      Arrow(from.shiftTypeVariables(by, cutoff), to.shiftTypeVariables(by, cutoff))
-    case Intersection(left, right) =>
-      Intersection(left.shiftTypeVariables(by, cutoff), right.shiftTypeVariables(by, cutoff))
-    case ForAll(bound, body) =>
-      ForAll(bound.shiftTypeVariables(by, cutoff), body.shiftTypeVariables(by, cutoff + 1))
-    case Record(label, fieldType) => Record(label, fieldType.shiftTypeVariables(by, cutoff))
+  /**
+   * One plus the greatest free type-variable index, or zero for a closed type.
+   * Recursive casts repeatedly revisit shared closed interfaces; retaining this intrinsic
+   * scope measure avoids rebuilding them during shifts and substitutions.
+   */
+  private[fiobs] lazy val requiredTypeDepth: Long = this match {
+    case Primitive(_) | Top | Bottom => 0L
+    case Variable(index) => index.toLong + 1L
+    case Arrow(from, to) => from.requiredTypeDepth.max(to.requiredTypeDepth)
+    case Intersection(left, right) => left.requiredTypeDepth.max(right.requiredTypeDepth)
+    case ForAll(bound, body) => bound.requiredTypeDepth.max((body.requiredTypeDepth - 1L).max(0L))
+    case Recursive(body) => (body.requiredTypeDepth - 1L).max(0L)
+    case Record(_, fieldType) => fieldType.requiredTypeDepth
   }
 
-  def substituteType(index: Int, replacement: Type): Type = this match {
-    case Primitive(_) | Top | Bottom => this
-    case Variable(variable) if variable < index => this
-    case Variable(variable) if variable == index => replacement
-    case Variable(variable) => Variable(variable - 1)
-    case Arrow(from, to) =>
-      Arrow(from.substituteType(index, replacement), to.substituteType(index, replacement))
-    case Intersection(left, right) =>
-      Intersection(left.substituteType(index, replacement), right.substituteType(index, replacement))
-    case ForAll(bound, body) =>
-      ForAll(
-        bound.substituteType(index, replacement),
-        body.substituteType(index + 1, replacement.shiftTypeVariables(1))
-      )
-    case Record(label, fieldType) => Record(label, fieldType.substituteType(index, replacement))
+  def shiftTypeVariables(by: Int, cutoff: Int = 0): Type = {
+    if (by == 0 || requiredTypeDepth <= cutoff) this
+    else this match {
+      case Primitive(_) | Top | Bottom => this
+      case Variable(index) =>
+        if (index < cutoff) {
+          this
+        } else {
+          val shiftedIndex = index + by
+          require(shiftedIndex >= 0, s"de Bruijn shift would create negative index: $index + $by")
+          Variable(shiftedIndex)
+        }
+      case Arrow(from, to) =>
+        Arrow(from.shiftTypeVariables(by, cutoff), to.shiftTypeVariables(by, cutoff))
+      case Intersection(left, right) =>
+        Intersection(left.shiftTypeVariables(by, cutoff), right.shiftTypeVariables(by, cutoff))
+      case ForAll(bound, body) =>
+        ForAll(bound.shiftTypeVariables(by, cutoff), body.shiftTypeVariables(by, cutoff + 1))
+      case Recursive(body) => Recursive(body.shiftTypeVariables(by, cutoff + 1))
+      case Record(label, fieldType) => Record(label, fieldType.shiftTypeVariables(by, cutoff))
+    }
+  }
+
+  def substituteType(index: Int, replacement: Type): Type = {
+    if (requiredTypeDepth <= index) this
+    else this match {
+      case Primitive(_) | Top | Bottom => this
+      case Variable(variable) if variable < index => this
+      case Variable(variable) if variable == index => replacement
+      case Variable(variable) => Variable(variable - 1)
+      case Arrow(from, to) =>
+        Arrow(from.substituteType(index, replacement), to.substituteType(index, replacement))
+      case Intersection(left, right) =>
+        Intersection(left.substituteType(index, replacement), right.substituteType(index, replacement))
+      case ForAll(bound, body) =>
+        ForAll(
+          bound.substituteType(index, replacement),
+          body.substituteType(index + 1, replacement.shiftTypeVariables(1))
+        )
+      case Recursive(body) => Recursive(body.substituteType(index + 1, replacement.shiftTypeVariables(1)))
+      case Record(label, fieldType) => Record(label, fieldType.substituteType(index, replacement))
+    }
+  }
+
+  /** One capture-avoiding unfolding; this does not identify a recursive type with its body. */
+  def unfolded: Option[Type] = this match {
+    case Recursive(body) => Some(body.substituteType(0, this))
+    case _ => None
   }
 
   def split: Option[TypeSplit] = this match {
@@ -176,6 +229,10 @@ enum Type {
     // ───────── Rigid-Var
     // Rigid(α)
     case Primitive(_) | Top | Bottom | Variable(_) => true
+
+    // ─────────────── Rigid-Rec
+    // Rigid(μα. A)
+    case Recursive(_) => true
 
     // Rigid(B)
     // ─────────────── Rigid-Arr

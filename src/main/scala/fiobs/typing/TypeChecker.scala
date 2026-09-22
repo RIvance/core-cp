@@ -22,6 +22,7 @@ enum TypeError {
   case UnboundTermVariable(index: Int)
   case UnboundGlobal(identifier: Identifier)
   case IllFormedType(inputType: Type)
+  case ExpectedRecursiveType(inputType: Type)
   case CannotInfer(term: Term)
   case CheckingShapeMismatch(term: Term, expectedType: Type)
   case TypeMismatch(term: Term, actualType: Type, expectedType: Type)
@@ -117,6 +118,26 @@ final class TypeChecker private (context: TypingContext) {
       } else {
         TypeChecker(context.withTerm(annotatedType)).check(body, annotatedType).map { runtimeBody =>
           TypedTerm(RuntimeTerm.Fix(annotatedType, runtimeBody), annotatedType)
+        }
+      }
+
+    // R = μ α. A    Δ ⊢ R ✔    Δ ; Γ ⊢ e ⇐ A[α ↦ R] ↝ r
+    // ─────────────────────────────────────────────────── T-Fold / Dec-Fold
+    // Δ ; Γ ⊢ fold[R] e ⇒ R ↝ ⟨fold r⟩ᴿ
+    case Term.Fold(recursiveType, body) =>
+      unfoldedType(recursiveType).flatMap { bodyType =>
+        check(body, bodyType).map { runtimeBody =>
+          TypedTerm(RuntimeTerm.Fold(recursiveType, runtimeBody), recursiveType)
+        }
+      }
+
+    // R = μ α. A    Δ ⊢ R ✔    Δ ; Γ ⊢ e ⇐ R ↝ r
+    // ─────────────────────────────────────────────────── T-Unfold / Dec-Unfold
+    // Δ ; Γ ⊢ unfold[R] e ⇒ A[α ↦ R] ↝ unfold r
+    case Term.Unfold(recursiveType, inner) =>
+      unfoldedType(recursiveType).flatMap { bodyType =>
+        check(inner, recursiveType).map { runtimeTerm =>
+          TypedTerm(RuntimeTerm.Unfold(runtimeTerm), bodyType)
         }
       }
 
@@ -300,6 +321,17 @@ final class TypeChecker private (context: TypingContext) {
             Result.Err(TypeError.TypeMismatch(term, typedTerm.inferredType, expectedType))
           }
         }
+      }
+    }
+  }
+
+  private def unfoldedType(recursiveType: Type): Result[Type, TypeError] = {
+    if (!recursiveType.isWellFormed(context.typeContext)) {
+      Result.Err(TypeError.IllFormedType(recursiveType))
+    } else {
+      recursiveType.unfolded match {
+        case Some(bodyType) => Result.Ok(bodyType)
+        case None => Result.Err(TypeError.ExpectedRecursiveType(recursiveType))
       }
     }
   }

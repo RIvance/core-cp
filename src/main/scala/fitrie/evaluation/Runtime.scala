@@ -6,6 +6,7 @@ import cp.primitive.{BinaryOperator, PrimitiveType, PrimitiveValue}
 import cp.util.Result
 
 import scala.annotation.tailrec
+import scala.collection.mutable
 
 /**
  * Evaluation closes scoped node references into immutable thunks before any
@@ -15,13 +16,49 @@ import scala.annotation.tailrec
  */
 private[evaluation] final class RuntimeTrie(
   val responseComputations: Set[RuntimeResponseComputation],
-  val routeContinuations: Map[RouteKey, RuntimeTrie],
+  val routeContinuations: Map[RouteKey, RuntimeContinuation],
   val terminationPayloads: TerminationPayloads
 )
 
 private[evaluation] sealed trait RuntimeResponseComputation
 
-private[evaluation] final class RuntimeLocalVariable(val index: TermVariableIndex)
+/** Fresh identities of lexical route binders; runtime substitution never equates them by their display index. */
+private[evaluation] final class RuntimeTermBinder
+private[evaluation] final class RuntimePathBinder
+
+private[evaluation] enum RuntimeRouteBinding {
+  case None
+  case Term(binders: Set[RuntimeTermBinder])
+  case Path(binders: Set[RuntimePathBinder])
+
+  def merge(other: RuntimeRouteBinding): RuntimeRouteBinding = (this, other) match {
+    case (None, None) => None
+    case (Term(left), Term(right)) => Term(left ++ right)
+    case (Path(left), Path(right)) => Path(left ++ right)
+    case _ => throw new IllegalStateException("matching runtime routes introduced different kinds of binder")
+  }
+}
+
+/** A merged route supplies one argument to every original binder represented by that continuation. */
+private[evaluation] final case class RuntimeContinuation(body: RuntimeTrie, binding: RuntimeRouteBinding)
+
+private[evaluation] final case class RuntimePathScope(binders: List[RuntimePathBinder]) {
+  def specialize[A](value: A, selected: Set[RuntimePathBinder])(
+    substitute: (A, PathVariableIndex) => A
+  ): (A, RuntimePathScope) = {
+    val selectedIndices = binders.zipWithIndex.collect { case (binder, index) if selected.contains(binder) => index }
+    val specialized = selectedIndices.reverse.foldLeft(value) { (current, index) =>
+      substitute(current, PathVariableIndex(index))
+    }
+    specialized -> RuntimePathScope(binders.filterNot(selected.contains))
+  }
+}
+
+private[evaluation] object RuntimePathScope {
+  val empty: RuntimePathScope = RuntimePathScope(Nil)
+}
+
+private[evaluation] final class RuntimeLocalVariable(val index: TermVariableIndex, val binder: RuntimeTermBinder)
     extends RuntimeResponseComputation
 
 private[evaluation] final class RuntimeGlobal(val identifier: Identifier)
@@ -33,8 +70,11 @@ private[evaluation] final class RuntimeStructuralReference(val target: () => Run
 private[evaluation] final class RuntimeIndex(val receiver: RuntimeTrie, val requests: RuntimeRequestSet)
     extends RuntimeResponseComputation
 
-private[evaluation] final class RuntimeFilter(val receiver: RuntimeTrie, val selectedRootKeys: RootKeyExpression)
-    extends RuntimeResponseComputation
+private[evaluation] final class RuntimeFilter(
+  val receiver: RuntimeTrie,
+  val selectedRootKeys: RootKeyExpression,
+  val pathScope: RuntimePathScope = RuntimePathScope.empty
+) extends RuntimeResponseComputation
 
 private[evaluation] final class RuntimePrimitiveOperation(
   val operator: BinaryOperator,
@@ -59,13 +99,18 @@ private[evaluation] final class RuntimeApplicationRequest(
 }
 
 private[evaluation] final case class RuntimeTypeApplicationRequest(
-  pathInterface: ObservationPathInterface
+  pathInterface: ObservationPathInterface,
+  pathScope: RuntimePathScope
 ) extends RuntimeRequest {
   override val routeKey: RouteKey = RouteKey.TypeApplication
 }
 
 private[evaluation] final case class RuntimeProjectionRequest(label: FieldLabel) extends RuntimeRequest {
   override val routeKey: RouteKey = RouteKey.Projection(label)
+}
+
+private[evaluation] case object RuntimeUnfoldRequest extends RuntimeRequest {
+  override val routeKey: RouteKey = RouteKey.Unfold
 }
 
 private[evaluation] final case class RuntimeRequestSet(requests: Set[RuntimeRequest])
@@ -106,15 +151,35 @@ private[evaluation] object RuntimeCompiler {
 
   private def close(
     trie: FiTrie,
-    ancestors: List[() => RuntimeTrie]
+    ancestors: List[() => RuntimeTrie],
+    termScope: List[RuntimeTermBinder] = Nil,
+    pathScope: RuntimePathScope = RuntimePathScope.empty
   ): RuntimeTrie = {
     lazy val current: RuntimeTrie = {
       val currentBinding = () => current
       val responseAncestors = currentBinding :: ancestors
       new RuntimeTrie(
-        trie.responseComputations.map(closeResponse(_, responseAncestors)),
+        trie.responseComputations.map(closeResponse(_, responseAncestors, termScope, pathScope)),
         trie.routeContinuations.map { case (routeKey, continuation) =>
-          routeKey -> close(continuation, responseAncestors)
+          val closed = routeKey match {
+            case RouteKey.Application =>
+              val binder = new RuntimeTermBinder
+              RuntimeContinuation(
+                close(continuation, responseAncestors, binder :: termScope, pathScope),
+                RuntimeRouteBinding.Term(Set(binder))
+              )
+            case RouteKey.TypeApplication =>
+              val binder = new RuntimePathBinder
+              RuntimeContinuation(
+                close(continuation, responseAncestors, termScope, RuntimePathScope(binder :: pathScope.binders)),
+                RuntimeRouteBinding.Path(Set(binder))
+              )
+            case RouteKey.Projection(_) | RouteKey.Unfold => RuntimeContinuation(
+              close(continuation, responseAncestors, termScope, pathScope),
+              RuntimeRouteBinding.None
+            )
+          }
+          routeKey -> closed
         },
         trie.terminationPayloads
       )
@@ -124,38 +189,45 @@ private[evaluation] object RuntimeCompiler {
 
   private def closeResponse(
     responseComputation: ResponseComputation,
-    ancestors: List[() => RuntimeTrie]
+    ancestors: List[() => RuntimeTrie],
+    termScope: List[RuntimeTermBinder],
+    pathScope: RuntimePathScope
   ): RuntimeResponseComputation = responseComputation match {
-    case ResponseComputation.LocalVariable(index) => new RuntimeLocalVariable(index)
+    case ResponseComputation.LocalVariable(index) => new RuntimeLocalVariable(index, termScope(index.value))
     case ResponseComputation.Global(identifier) => new RuntimeGlobal(identifier)
-    case ResponseComputation.StructuralReference(index) =>
-      new RuntimeStructuralReference(ancestors(index.value))
-    case ResponseComputation.Index(receiver, requests) =>
-      new RuntimeIndex(close(receiver, ancestors), closeRequests(requests, ancestors))
-    case ResponseComputation.Filter(receiver, selectedRootKeys) =>
-      new RuntimeFilter(close(receiver, ancestors), selectedRootKeys)
-    case ResponseComputation.PrimitiveOperation(operator, left, right) =>
-      new RuntimePrimitiveOperation(
-        operator,
-        close(left, ancestors),
-        close(right, ancestors)
-      )
-    case ResponseComputation.Conditional(condition, whenTrue, whenFalse) =>
-      new RuntimeConditional(
-        close(condition, ancestors),
-        close(whenTrue, ancestors),
-        close(whenFalse, ancestors)
-      )
+    case ResponseComputation.StructuralReference(index) => new RuntimeStructuralReference(ancestors(index.value))
+    case ResponseComputation.Index(receiver, requests) => new RuntimeIndex(
+      close(receiver, ancestors, termScope, pathScope),
+      closeRequests(requests, ancestors, termScope, pathScope)
+    )
+    case ResponseComputation.Filter(receiver, selectedRootKeys) => new RuntimeFilter(
+      close(receiver, ancestors, termScope, pathScope),
+      selectedRootKeys,
+      pathScope
+    )
+    case ResponseComputation.PrimitiveOperation(operator, left, right) => new RuntimePrimitiveOperation(
+      operator,
+      close(left, ancestors, termScope, pathScope),
+      close(right, ancestors, termScope, pathScope)
+    )
+    case ResponseComputation.Conditional(condition, whenTrue, whenFalse) => new RuntimeConditional(
+      close(condition, ancestors, termScope, pathScope),
+      close(whenTrue, ancestors, termScope, pathScope),
+      close(whenFalse, ancestors, termScope, pathScope)
+    )
   }
 
   private def closeRequests(
     requests: RequestSet,
-    ancestors: List[() => RuntimeTrie]
+    ancestors: List[() => RuntimeTrie],
+    termScope: List[RuntimeTermBinder],
+    pathScope: RuntimePathScope
   ): RuntimeRequestSet = RuntimeRequestSet(requests.requests.map {
     case Request.Application(argument) =>
-      new RuntimeApplicationRequest(close(argument, ancestors))
-    case Request.TypeApplication(pathInterface) => RuntimeTypeApplicationRequest(pathInterface)
+      new RuntimeApplicationRequest(close(argument, ancestors, termScope, pathScope))
+    case Request.TypeApplication(pathInterface) => RuntimeTypeApplicationRequest(pathInterface, pathScope)
     case Request.Projection(label) => RuntimeProjectionRequest(label)
+    case Request.Unfold => RuntimeUnfoldRequest
   })
 }
 
@@ -164,7 +236,7 @@ private object RuntimeTrie {
 
   def node(
     responseComputations: Set[RuntimeResponseComputation] = Set.empty,
-    routeContinuations: Map[RouteKey, RuntimeTrie] = Map.empty,
+    routeContinuations: Map[RouteKey, RuntimeContinuation] = Map.empty,
     terminationPayloads: TerminationPayloads = TerminationPayloads.empty
   ): RuntimeTrie = new RuntimeTrie(
     responseComputations,
@@ -235,23 +307,33 @@ private object RuntimeTrie {
            * Φ ; Q selects t′
            */
           case application: RuntimeApplicationRequest =>
-            RuntimeBinding.substituteTermVariable(continuation, 0, application.argument)
+            continuation.binding match {
+              case RuntimeRouteBinding.Term(binders) =>
+                RuntimeBinding.substituteTermVariables(continuation.body, binders, application.argument)
+              case _ => throw new IllegalStateException("an application route has no runtime term binder")
+            }
 
           // tapp[𝒜] ∈ Q    tappα ↦ t ∈ Φ    t[α ↦ 𝒜] = t′
           // ───────────────────────────────────────────── Index-TApp-Paths
           // Φ ; Q selects t′
-          case typeApplication: RuntimeTypeApplicationRequest => Result.Ok(
-            RuntimeBinding.substitutePathVariable(
-              continuation,
-              PathVariableIndex(0),
+          case typeApplication: RuntimeTypeApplicationRequest => continuation.binding match {
+            case RuntimeRouteBinding.Path(binders) => RuntimeBinding.substitutePathVariables(
+              continuation.body,
+              binders,
               typeApplication.pathInterface
             )
-          )
+            case _ => throw new IllegalStateException("a type-application route has no runtime path binder")
+          }
 
           // projℓ ∈ Q    projℓ ↦ t ∈ Φ
           // ───────────────────────────── Index-Proj
           // Φ ; Q selects t
-          case _: RuntimeProjectionRequest => Result.Ok(continuation)
+          case _: RuntimeProjectionRequest => Result.Ok(continuation.body)
+
+          // unfold ∈ Q    unfold ↦ t ∈ Φ
+          // ─────────────────────────── Index-Unfold
+          // Φ ; Q selects t
+          case RuntimeUnfoldRequest => Result.Ok(continuation.body)
         }
       }
     }
@@ -273,18 +355,21 @@ private object RuntimeTrie {
   }
 
   private def mergeRoutes(
-    left: Map[RouteKey, RuntimeTrie],
-    right: Map[RouteKey, RuntimeTrie]
-  ): Result[Map[RouteKey, RuntimeTrie], FiTrieMergeError] = {
+    left: Map[RouteKey, RuntimeContinuation],
+    right: Map[RouteKey, RuntimeContinuation]
+  ): Result[Map[RouteKey, RuntimeContinuation], FiTrieMergeError] = {
     (left.keySet ++ right.keySet).foldLeft(
-      Result.Ok(Map.empty[RouteKey, RuntimeTrie]): Result[Map[RouteKey, RuntimeTrie], FiTrieMergeError]
+      Result.Ok(Map.empty[RouteKey, RuntimeContinuation]): Result[Map[RouteKey, RuntimeContinuation], FiTrieMergeError]
     ) { (accumulated, routeKey) =>
       accumulated.flatMap { routes =>
         (left.get(routeKey), right.get(routeKey)) match {
           case (Some(leftContinuation), Some(rightContinuation)) =>
-            merge(leftContinuation, rightContinuation)
+            merge(leftContinuation.body, rightContinuation.body)
               .mapError(_.beneath(routeKey))
-              .map(continuation => routes.updated(routeKey, continuation))
+              .map(continuation => routes.updated(routeKey, RuntimeContinuation(
+                continuation,
+                leftContinuation.binding.merge(rightContinuation.binding)
+              )))
           case (Some(continuation), None) => Result.Ok(routes.updated(routeKey, continuation))
           case (None, Some(continuation)) => Result.Ok(routes.updated(routeKey, continuation))
           case (None, None) =>
@@ -316,251 +401,205 @@ private object RuntimeTrie {
 }
 
 private object RuntimeBinding {
-  def substituteTermVariable(
+  def substituteTermVariables(
     trie: RuntimeTrie,
-    index: Int,
+    binders: Set[RuntimeTermBinder],
     replacement: RuntimeTrie
   ): Result[RuntimeTrie, FiTrieMergeError] = {
-    substituteTrieTermVariable(trie, index, 0, replacement)
+    new GraphSubstitution(Substitution.Term(binders, replacement)).apply(trie)
   }
 
-  def substitutePathVariable(
+  def substitutePathVariables(
     trie: RuntimeTrie,
-    index: PathVariableIndex,
+    binders: Set[RuntimePathBinder],
     replacement: ObservationPathInterface
-  ): RuntimeTrie = {
-    substituteTriePathVariable(trie, index, replacement)
-  }
-
-  private def substituteTriePathVariable(
-    trie: RuntimeTrie,
-    index: PathVariableIndex,
-    replacement: ObservationPathInterface
-  ): RuntimeTrie = {
-    RuntimeTrie.node(
-      trie.responseComputations.map(substituteResponsePathVariable(_, index, replacement)),
-      trie.routeContinuations.map { case (routeKey, continuation) =>
-        val introducedVariables = routeKey.introducedPathVariables
-        routeKey -> substituteTriePathVariable(
-          continuation,
-          PathVariableIndex(index.value + introducedVariables),
-          replacement.shiftPathVariables(introducedVariables)
-        )
-      },
-      trie.terminationPayloads
-    )
-  }
-
-  private def substituteResponsePathVariable(
-    responseComputation: RuntimeResponseComputation,
-    index: PathVariableIndex,
-    replacement: ObservationPathInterface
-  ): RuntimeResponseComputation = responseComputation match {
-    case _: RuntimeLocalVariable | _: RuntimeGlobal | _: RuntimeStructuralReference =>
-      responseComputation
-    case indexing: RuntimeIndex => new RuntimeIndex(
-      substituteTriePathVariable(indexing.receiver, index, replacement),
-      RuntimeRequestSet(indexing.requests.requests.map(
-        substituteRequestPathVariable(_, index, replacement)
-      ))
-    )
-    case filtering: RuntimeFilter => new RuntimeFilter(
-      substituteTriePathVariable(filtering.receiver, index, replacement),
-      filtering.selectedRootKeys.substitutePathVariable(index, replacement)
-    )
-    case primitive: RuntimePrimitiveOperation => new RuntimePrimitiveOperation(
-      primitive.operator,
-      substituteTriePathVariable(primitive.left, index, replacement),
-      substituteTriePathVariable(primitive.right, index, replacement)
-    )
-    case conditional: RuntimeConditional => new RuntimeConditional(
-      substituteTriePathVariable(conditional.condition, index, replacement),
-      substituteTriePathVariable(conditional.whenTrue, index, replacement),
-      substituteTriePathVariable(conditional.whenFalse, index, replacement)
-    )
-  }
-
-  private def substituteRequestPathVariable(
-    request: RuntimeRequest,
-    index: PathVariableIndex,
-    replacement: ObservationPathInterface
-  ): RuntimeRequest = request match {
-    case application: RuntimeApplicationRequest => new RuntimeApplicationRequest(
-      substituteTriePathVariable(application.argument, index, replacement)
-    )
-    case typeApplication: RuntimeTypeApplicationRequest => RuntimeTypeApplicationRequest(
-      typeApplication.pathInterface.substitutePathVariable(index, replacement)
-    )
-    case _: RuntimeProjectionRequest => request
-  }
-
-  private def substituteTrieTermVariable(
-    trie: RuntimeTrie,
-    targetIndex: Int,
-    binderDepth: Int,
-    replacement: RuntimeTrie
   ): Result[RuntimeTrie, FiTrieMergeError] = {
-    substituteRoutes(trie.routeContinuations, targetIndex, binderDepth, replacement).flatMap { routes =>
-      val knownStructure = RuntimeTrie.node(
-        routeContinuations = routes,
-        terminationPayloads = trie.terminationPayloads
-      )
-      trie.responseComputations.iterator.map(
-        substituteResponse(_, targetIndex, binderDepth, replacement)
-      ).foldLeft(Result.Ok(knownStructure): Result[RuntimeTrie, FiTrieMergeError]) {
-        case (accumulated, responseResult) =>
-          accumulated.flatMap(current => responseResult.flatMap(RuntimeTrie.merge(current, _)))
-      }
+    new GraphSubstitution(Substitution.Path(binders, replacement)).apply(trie)
+  }
+
+  private enum Substitution {
+    case Term(binders: Set[RuntimeTermBinder], replacement: RuntimeTrie)
+    case Path(binders: Set[RuntimePathBinder], replacement: ObservationPathInterface)
+
+    def isEmpty: Boolean = this match {
+      case Term(binders, _) => binders.isEmpty
+      case Path(binders, _) => binders.isEmpty
+    }
+
+    def beneath(binding: RuntimeRouteBinding): Substitution = (this, binding) match {
+      case (Term(binders, replacement), RuntimeRouteBinding.Term(bound)) => Term(binders -- bound, replacement)
+      case (Path(binders, replacement), RuntimeRouteBinding.Path(bound)) => Path(binders -- bound, replacement)
+      case _ => this
     }
   }
 
-  private def substituteResponse(
-    responseComputation: RuntimeResponseComputation,
-    targetIndex: Int,
-    binderDepth: Int,
-    replacement: RuntimeTrie
-  ): Result[RuntimeTrie, FiTrieMergeError] = responseComputation match {
-    case variable: RuntimeLocalVariable
-        if variable.index.value == targetIndex + binderDepth =>
-      Result.Ok(shiftTermVariables(replacement, binderDepth, 0))
-    case variable: RuntimeLocalVariable
-        if variable.index.value < targetIndex + binderDepth =>
-      Result.Ok(RuntimeTrie.response(responseComputation))
-    case variable: RuntimeLocalVariable =>
-      Result.Ok(RuntimeTrie.response(new RuntimeLocalVariable(
-        TermVariableIndex(variable.index.value - 1)
-      )))
-    case _: RuntimeGlobal | _: RuntimeStructuralReference =>
-      Result.Ok(RuntimeTrie.response(responseComputation))
-    case indexing: RuntimeIndex =>
-      substituteTrieTermVariable(indexing.receiver, targetIndex, binderDepth, replacement).flatMap { receiver =>
-        substituteRequests(indexing.requests, targetIndex, binderDepth, replacement).map { requests =>
-          RuntimeTrie.response(new RuntimeIndex(receiver, requests))
-        }
-      }
-    case filtering: RuntimeFilter =>
-      substituteTrieTermVariable(filtering.receiver, targetIndex, binderDepth, replacement)
-        .map(receiver =>
-          RuntimeTrie.response(new RuntimeFilter(receiver, filtering.selectedRootKeys))
-        )
-    case primitive: RuntimePrimitiveOperation =>
-      for {
-        left <- substituteTrieTermVariable(primitive.left, targetIndex, binderDepth, replacement)
-        right <- substituteTrieTermVariable(primitive.right, targetIndex, binderDepth, replacement)
-      } yield RuntimeTrie.response(new RuntimePrimitiveOperation(primitive.operator, left, right))
-    case conditional: RuntimeConditional =>
-      for {
-        condition <- substituteTrieTermVariable(
-          conditional.condition,
-          targetIndex,
-          binderDepth,
-          replacement
-        )
-        whenTrue <- substituteTrieTermVariable(
-          conditional.whenTrue,
-          targetIndex,
-          binderDepth,
-          replacement
-        )
-        whenFalse <- substituteTrieTermVariable(
-          conditional.whenFalse,
-          targetIndex,
-          binderDepth,
-          replacement
-        )
-      } yield RuntimeTrie.response(new RuntimeConditional(condition, whenTrue, whenFalse))
-  }
+  /**
+   * A construction-only knot. All links are completed before publication and
+   * retain only their finished node, so a runtime reference cannot keep the
+   * substitution's source graph or work registry alive.
+   */
+  private final class GraphLink extends (() => RuntimeTrie) {
+    private var completed: Option[RuntimeTrie] = None
 
-  private def substituteRoutes(
-    routes: Map[RouteKey, RuntimeTrie],
-    targetIndex: Int,
-    binderDepth: Int,
-    replacement: RuntimeTrie
-  ): Result[Map[RouteKey, RuntimeTrie], FiTrieMergeError] = {
-    routes.foldLeft(
-      Result.Ok(Map.empty[RouteKey, RuntimeTrie]): Result[Map[RouteKey, RuntimeTrie], FiTrieMergeError]
-    ) { case (accumulated, (routeKey, continuation)) =>
-      accumulated.flatMap { substitutedRoutes =>
-        substituteTrieTermVariable(
-          continuation,
-          targetIndex,
-          binderDepth + routeKey.introducedTermVariables,
-          replacement
-        ).map(substitutedRoutes.updated(routeKey, _))
-      }
+    def complete(target: RuntimeTrie): Unit = {
+      require(completed.isEmpty, "a runtime graph link can only be completed once")
+      completed = Some(target)
+    }
+
+    override def apply(): RuntimeTrie = completed.getOrElse {
+      throw new IllegalStateException("an unfinished runtime graph escaped its construction boundary")
     }
   }
 
-  private def substituteRequests(
-    requests: RuntimeRequestSet,
-    targetIndex: Int,
-    binderDepth: Int,
-    replacement: RuntimeTrie
-  ): Result[RuntimeRequestSet, FiTrieMergeError] = {
-    requests.requests.foldLeft(
-      Result.Ok(Set.empty[RuntimeRequest]): Result[Set[RuntimeRequest], FiTrieMergeError]
-    ) { (accumulated, request) =>
-      accumulated.flatMap { substitutedRequests =>
-        request match {
-          case application: RuntimeApplicationRequest =>
-            substituteTrieTermVariable(application.argument, targetIndex, binderDepth, replacement)
-              .map(argument => substitutedRequests + new RuntimeApplicationRequest(argument))
-          case _: RuntimeTypeApplicationRequest | _: RuntimeProjectionRequest =>
-            Result.Ok(substitutedRequests + request)
+  /**
+   * Clones a scoped graph once per substitution. Lexical binder identities let
+   * substitution follow an escaping structural edge without confusing its
+   * referent's binders with those at the edge's use site. The work queue closes
+   * every backedge and validates every merge before a rebuilt graph is returned.
+   *
+   * An executed request's argument is closed: the compiler requires a closed
+   * entry, and evaluation never enters an unapplied app/tapp continuation.
+   * Outer applications therefore specialize captured occurrences before an
+   * inner request executes. Replacements need no rebasing at insertion; this
+   * private operation is not substitution of arbitrary open runtime graphs.
+   *
+   * The registry is local to this one graph transformation; it is needed to tie
+   * finite cycles and preserve sharing, not to cache evaluation results.
+   */
+  private final class GraphSubstitution(initial: Substitution) {
+    private val rebuilt = mutable.Map.empty[(RuntimeTrie, Substitution), RebuiltNode]
+    private val pending = mutable.Queue.empty[RebuiltNode]
+
+    private final class RebuiltNode(source: RuntimeTrie, substitution: Substitution) {
+      val link = new GraphLink
+
+      lazy val result: Result[RuntimeTrie, FiTrieMergeError] = {
+        val transformed = if (substitution.isEmpty) Result.Ok(source) else transform(source, substitution)
+        transformed.map { target =>
+          link.complete(target)
+          target
         }
       }
-    }.map(RuntimeRequestSet(_))
-  }
+    }
 
-  private def shiftTermVariables(trie: RuntimeTrie, by: Int, cutoff: Int): RuntimeTrie = {
-    RuntimeTrie.node(
-      trie.responseComputations.map(shiftResponse(_, by, cutoff)),
-      trie.routeContinuations.map { case (routeKey, continuation) =>
-        routeKey -> shiftTermVariables(
-          continuation,
-          by,
-          cutoff + routeKey.introducedTermVariables
+    def apply(source: RuntimeTrie): Result[RuntimeTrie, FiTrieMergeError] = {
+      val entry = node(source, initial)
+      var failure: Option[FiTrieMergeError] = None
+      while (pending.nonEmpty && failure.isEmpty) {
+        pending.dequeue().result match {
+          case Result.Ok(_) => ()
+          case Result.Err(error) => failure = Some(error)
+        }
+      }
+      failure match {
+        case Some(error) => Result.Err(error)
+        case None => entry.result
+      }
+    }
+
+    private def node(source: RuntimeTrie, substitution: Substitution): RebuiltNode = {
+      rebuilt.getOrElseUpdate(source -> substitution, {
+        val next = new RebuiltNode(source, substitution)
+        pending.enqueue(next)
+        next
+      })
+    }
+
+    private def transform(source: RuntimeTrie, substitution: Substitution): Result[RuntimeTrie, FiTrieMergeError] = {
+      val routes = Result.traverse(source.routeContinuations.toList) { case (routeKey, continuation) =>
+        // σ′ = σ ∖ binders(κ)    t[σ′] = u
+        // ───────────────────────────────── Sub-Route
+        // (κ ↦ t)[σ] = κ ↦ u
+        node(continuation.body, substitution.beneath(continuation.binding)).result.map { body =>
+          routeKey -> continuation.copy(body = body)
+        }
+      }
+      routes.flatMap { substitutedRoutes =>
+        val known = RuntimeTrie.node(
+          routeContinuations = substitutedRoutes.toMap,
+          terminationPayloads = source.terminationPayloads
         )
-      },
-      trie.terminationPayloads
-    )
-  }
+        source.responseComputations.foldLeft(Result.Ok(known): Result[RuntimeTrie, FiTrieMergeError]) {
+          (accumulated, response) =>
+            for {
+              current <- accumulated
+              substituted <- transformResponse(response, substitution)
+              merged <- RuntimeTrie.merge(current, substituted)
+            } yield merged
+        }
+      }
+    }
 
-  private def shiftResponse(
-    responseComputation: RuntimeResponseComputation,
-    by: Int,
-    cutoff: Int
-  ): RuntimeResponseComputation = responseComputation match {
-    case variable: RuntimeLocalVariable if variable.index.value >= cutoff =>
-      new RuntimeLocalVariable(TermVariableIndex(variable.index.value + by))
-    case _: RuntimeLocalVariable | _: RuntimeGlobal | _: RuntimeStructuralReference =>
-      responseComputation
-    case indexing: RuntimeIndex =>
-      new RuntimeIndex(
-        shiftTermVariables(indexing.receiver, by, cutoff),
-        RuntimeRequestSet(indexing.requests.requests.map {
-          case application: RuntimeApplicationRequest =>
-            new RuntimeApplicationRequest(shiftTermVariables(application.argument, by, cutoff))
-          case request => request
-        })
-      )
-    case filtering: RuntimeFilter =>
-      new RuntimeFilter(
-        shiftTermVariables(filtering.receiver, by, cutoff),
-        filtering.selectedRootKeys
-      )
-    case primitive: RuntimePrimitiveOperation =>
-      new RuntimePrimitiveOperation(
-        primitive.operator,
-        shiftTermVariables(primitive.left, by, cutoff),
-        shiftTermVariables(primitive.right, by, cutoff)
-      )
-    case conditional: RuntimeConditional =>
-      new RuntimeConditional(
-        shiftTermVariables(conditional.condition, by, cutoff),
-        shiftTermVariables(conditional.whenTrue, by, cutoff),
-        shiftTermVariables(conditional.whenFalse, by, cutoff)
-      )
+    private def transformResponse(
+      response: RuntimeResponseComputation,
+      substitution: Substitution
+    ): Result[RuntimeTrie, FiTrieMergeError] = response match {
+      // σ(x) = u
+      // ────────────────── Sub-Variable
+      // {x ; · ; ·}[σ] = u
+      case variable: RuntimeLocalVariable => substitution match {
+        case Substitution.Term(binders, replacement) if binders.contains(variable.binder) => Result.Ok(replacement)
+        case _ => Result.Ok(RuntimeTrie.response(variable))
+      }
+      case _: RuntimeGlobal => Result.Ok(RuntimeTrie.response(response))
+
+      // binding(ref) = t    t[σ] = u
+      // ───────────────────────────── Sub-Reference
+      // ref[σ] = ref(u)
+      // Rebuilding a visited (t, σ) reuses its knot. A binder on a route inside
+      // t removes itself from σ, even if the reference originated below it.
+      case reference: RuntimeStructuralReference =>
+        val target = node(reference.target(), substitution)
+        Result.Ok(RuntimeTrie.response(new RuntimeStructuralReference(target.link)))
+
+      case indexing: RuntimeIndex =>
+        for {
+          receiver <- node(indexing.receiver, substitution).result
+          requests <- Result.traverse(indexing.requests.requests.toList)(transformRequest(_, substitution))
+        } yield RuntimeTrie.response(new RuntimeIndex(receiver, RuntimeRequestSet(requests.toSet)))
+
+      case filtering: RuntimeFilter =>
+        node(filtering.receiver, substitution).result.map { receiver =>
+          val (keys, scope) = substitution match {
+            case Substitution.Path(binders, replacement) =>
+              filtering.pathScope.specialize(filtering.selectedRootKeys, binders)(
+                _.substitutePathVariable(_, replacement)
+              )
+            case _ => filtering.selectedRootKeys -> filtering.pathScope
+          }
+          RuntimeTrie.response(new RuntimeFilter(receiver, keys, scope))
+        }
+
+      case primitive: RuntimePrimitiveOperation =>
+        for {
+          left <- node(primitive.left, substitution).result
+          right <- node(primitive.right, substitution).result
+        } yield RuntimeTrie.response(new RuntimePrimitiveOperation(primitive.operator, left, right))
+
+      case conditional: RuntimeConditional =>
+        for {
+          condition <- node(conditional.condition, substitution).result
+          whenTrue <- node(conditional.whenTrue, substitution).result
+          whenFalse <- node(conditional.whenFalse, substitution).result
+        } yield RuntimeTrie.response(new RuntimeConditional(condition, whenTrue, whenFalse))
+    }
+
+    private def transformRequest(
+      request: RuntimeRequest,
+      substitution: Substitution
+    ): Result[RuntimeRequest, FiTrieMergeError] = request match {
+      case application: RuntimeApplicationRequest =>
+        node(application.argument, substitution).result.map(new RuntimeApplicationRequest(_))
+      case application: RuntimeTypeApplicationRequest => substitution match {
+        case Substitution.Path(binders, replacement) =>
+          val (paths, scope) = application.pathScope.specialize(application.pathInterface, binders)(
+            _.substitutePathVariable(_, replacement)
+          )
+          Result.Ok(RuntimeTypeApplicationRequest(paths, scope))
+        case _ => Result.Ok(application)
+      }
+      case _: RuntimeProjectionRequest | RuntimeUnfoldRequest => Result.Ok(request)
+    }
   }
 }
 
@@ -683,7 +722,8 @@ private[evaluation] object RuntimeEvaluation {
                 step(filtering.receiver, globalEnvironment).map {
                   _.map(receiver => RuntimeTrie.response(new RuntimeFilter(
                     receiver,
-                    filtering.selectedRootKeys
+                    filtering.selectedRootKeys,
+                    filtering.pathScope
                   )))
                 }
             }

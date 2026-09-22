@@ -101,7 +101,9 @@ private[visualizer] object CompilerDiagnostics {
     case CpElaborationError.DuplicateTypeDefinition(name) =>
       s"Type '$name' is defined more than once in this module."
     case CpElaborationError.RecursiveTypeDefinitions(identifiers) =>
-      s"Recursive type definitions are not allowed: ${identifiers.map(_.render).mkString(", ")}."
+      s"Cyclic type aliases require an explicit μ binder: ${identifiers.map(_.render).mkString(", ")}."
+    case CpElaborationError.ExpectedRecursiveType(actualType) =>
+      s"Expected a recursive type μ X. A, but received ${actualType.render}."
   }
 
   private def renderNameResolutionError(error: NameResolutionError): String = error match {
@@ -157,6 +159,8 @@ private[visualizer] object CompilerDiagnostics {
     case TypeError.UnboundTermVariable(index) => s"Unbound Fiobs term variable x$index."
     case TypeError.UnboundGlobal(identifier) => s"Unknown global ${identifier.render}."
     case TypeError.IllFormedType(inputType) => s"Type ${inputType.render()} is not well formed."
+    case TypeError.ExpectedRecursiveType(inputType) =>
+      s"Expected a recursive type μ X. A, but received ${inputType.render()}."
     case TypeError.CannotInfer(term) =>
       s"Cannot infer the type of '${term.render()}'; add an annotation."
     case TypeError.CheckingShapeMismatch(term, expectedType) =>
@@ -195,6 +199,8 @@ private[visualizer] object CompilerDiagnostics {
       s"FiTrie application expected an arrow, but found ${actualType.render()}."
     case FiTrieElaborationError.ExpectedUniversal(_, actualType) =>
       s"FiTrie type application expected a universal type, but found ${actualType.render()}."
+    case FiTrieElaborationError.ExpectedRecursive(_, actualType) =>
+      s"FiTrie unfolding expected a recursive type, but found ${actualType.render()}."
     case FiTrieElaborationError.ExpectedRecord(_, label, actualType) =>
       s"FiTrie projection '$label' expected a record, but found ${actualType.render()}."
     case FiTrieElaborationError.UnexpectedType(_, actualType, expectedType) =>
@@ -219,6 +225,7 @@ private[visualizer] object CompilerDiagnostics {
   private def renderRoute(routeKey: RouteKey): String = routeKey match {
     case RouteKey.Application => "application"
     case RouteKey.TypeApplication => "type application"
+    case RouteKey.Unfold => "unfolding"
     case RouteKey.Projection(label) => s"projection ${label.value}"
   }
 

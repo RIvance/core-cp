@@ -175,6 +175,7 @@ private[visualizer] object FiTriePresentation {
           ) => leftInterface == rightInterface
         case (EvaluationRequest.Projection(leftLabel), EvaluationRequest.Projection(rightLabel)) =>
           leftLabel == rightLabel
+        case (EvaluationRequest.Unfold, EvaluationRequest.Unfold) => true
         case _ => false
       }
     }

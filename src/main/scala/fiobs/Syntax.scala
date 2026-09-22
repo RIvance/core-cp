@@ -11,6 +11,8 @@ enum Expr {
   case Top
   case Lambda(parameter: String, body: Expr)
   case Fix(name: String, annotatedType: SurfaceType, body: Expr)
+  case Fold(recursiveType: SurfaceType, body: Expr)
+  case Unfold(recursiveType: SurfaceType, term: Expr)
   case Application(function: Expr, argument: Expr)
   case Merge(left: Expr, right: Expr)
   case Annotation(expression: Expr, annotatedType: SurfaceType)
@@ -31,6 +33,8 @@ enum Term {
   case Top
   case Lambda(body: Term)
   case Fix(annotatedType: Type, body: Term)
+  case Fold(recursiveType: Type, body: Term)
+  case Unfold(recursiveType: Type, term: Term)
   case Application(function: Term, argument: Term)
   case Merge(left: Term, right: Term)
   case Annotation(term: Term, annotatedType: Type)
@@ -47,6 +51,8 @@ enum Term {
     case Variable(_) | Literal(_) | Top => Set.empty
     case Lambda(body) => body.referencedGlobals
     case Fix(_, body) => body.referencedGlobals
+    case Fold(_, body) => body.referencedGlobals
+    case Unfold(_, term) => term.referencedGlobals
     case Application(function, argument) => function.referencedGlobals ++ argument.referencedGlobals
     case Merge(left, right) => left.referencedGlobals ++ right.referencedGlobals
     case Annotation(term, _) => term.referencedGlobals

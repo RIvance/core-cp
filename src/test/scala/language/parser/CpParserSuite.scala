@@ -6,6 +6,48 @@ import cp.primitive.{BinaryOperator, PrimitiveValue}
 import cp.util.Result
 
 class CpParserSuite extends munit.FunSuite {
+  test("interface declarations normalize to explicit recursive type aliases") {
+    val bodies = List(
+      "{ eval: Int; double: Exp; eq: Exp -> Bool; }",
+      "{ next: Exp; identity: forall Exp. Exp -> Exp; nested: μ Exp. { next: Exp }; }",
+      "{}"
+    )
+    bodies.foreach { body =>
+      val explicit = CpParser.parseModule(s"type Exp = μ Exp. $body;")
+      assert(explicit.toOption.nonEmpty)
+      assertEquals(CpParser.parseModule(s"interface Exp $body;"), explicit)
+    }
+  }
+
+  test("parameterized interfaces keep sorts outside their recursive binder") {
+    val body = "{ value: Element; next: Stream; }"
+    val explicit = CpParser.parseModule(s"type Stream<Element> = μ Stream. $body;")
+    assert(explicit.toOption.nonEmpty)
+    assertEquals(CpParser.parseModule(s"interface Stream<Element> $body;"), explicit)
+  }
+
+  test("interfaces accept optional terminators without consuming adjacent declarations") {
+    val source = """def before = 1
+      |interface Box { value: Int }
+      |def interfaceValue = 42
+      |interface Empty {}
+      |def main = interfaceValue
+      |""".stripMargin
+    val explicit = """def before = 1;
+      |type Box = μ Box. { value: Int; };
+      |def interfaceValue = 42;
+      |type Empty = μ Empty. Top;
+      |def main = interfaceValue;
+      |""".stripMargin
+    val expected = CpParser.parseModule(explicit)
+    assert(expected.toOption.nonEmpty)
+    assertEquals(CpParser.parseModule(source), expected)
+  }
+
+  test("an empty record type uses the same exact Top unit as an empty record value") {
+    assertEquals(CpParser.parseModule("type Empty = {};"), CpParser.parseModule("type Empty = Top;"))
+  }
+
   test("module declarations and all import forms preserve absolute namespaces") {
     val source =
       """

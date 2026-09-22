@@ -3,6 +3,21 @@ import type { TrieNode, TrieSnapshot } from "./model";
 import { renderPaperResponse, renderPaperTrie } from "./trie-rendering";
 
 describe("paper-style FiTrie rendering", () => {
+  it("renders fold routes and payload-free unfolding requests", () => {
+    const snapshot: TrieSnapshot = {
+      root: 0,
+      nodes: [
+        node(0, {
+          responses: [{ kind: "index", label: "unfold", receiver: 1, requests: [{ kind: "unfold" }] }]
+        }),
+        node(1, { routes: [{ label: "κᵘⁿᶠᵒˡᵈ", notation: "unfold", target: 2 }] }),
+        node(2, { terminations: [{ key: "int", value: "42" }] })
+      ]
+    };
+
+    expect(renderPaperTrie(snapshot, snapshot.root)).toBe("{{unfold ↦ {int ↦ 42}} ◁ ⟨unfold⟩}");
+  });
+
   it("includes complete route and response children", () => {
     const snapshot: TrieSnapshot = {
       root: 0,

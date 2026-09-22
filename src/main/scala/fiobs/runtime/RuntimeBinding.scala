@@ -5,7 +5,12 @@ import cp.fiobs.binding.Binding.*
 
 object RuntimeBinding {
   extension (term: RuntimeTerm) {
-    def shiftTermVariables(by: Int, cutoff: Int = 0): RuntimeTerm = term match {
+    def shiftTermVariables(by: Int, cutoff: Int = 0): RuntimeTerm = {
+      if (by == 0 || term.requiredTermDepth <= cutoff) term
+      else shiftFreeTermVariables(by, cutoff)
+    }
+
+    private def shiftFreeTermVariables(by: Int, cutoff: Int): RuntimeTerm = term match {
       case RuntimeTerm.Variable(index) =>
         if (index < cutoff) term else RuntimeTerm.Variable(shiftedIndex(index, by))
       case RuntimeTerm.Global(_) | RuntimeTerm.Literal(_) | RuntimeTerm.Top => term
@@ -13,6 +18,9 @@ object RuntimeBinding {
         RuntimeTerm.Lambda(parameterType, body.shiftTermVariables(by, cutoff + 1), resultType)
       case RuntimeTerm.Fix(annotatedType, body) =>
         RuntimeTerm.Fix(annotatedType, body.shiftTermVariables(by, cutoff + 1))
+      case RuntimeTerm.Fold(recursiveType, body) =>
+        RuntimeTerm.Fold(recursiveType, body.shiftTermVariables(by, cutoff))
+      case RuntimeTerm.Unfold(inner) => RuntimeTerm.Unfold(inner.shiftTermVariables(by, cutoff))
       case RuntimeTerm.Application(function, argument) =>
         RuntimeTerm.Application(function.shiftTermVariables(by, cutoff), argument.shiftTermVariables(by, cutoff))
       case RuntimeTerm.Merge(left, right) =>
@@ -37,7 +45,12 @@ object RuntimeBinding {
         )
     }
 
-    def substituteTerm(index: Int, replacement: RuntimeTerm): RuntimeTerm = term match {
+    def substituteTerm(index: Int, replacement: RuntimeTerm): RuntimeTerm = {
+      if (term.requiredTermDepth <= index) term
+      else substituteFreeTerm(index, replacement)
+    }
+
+    private def substituteFreeTerm(index: Int, replacement: RuntimeTerm): RuntimeTerm = term match {
       case RuntimeTerm.Variable(variable) if variable < index => term
       case RuntimeTerm.Variable(variable) if variable == index => replacement.shiftTermVariables(index)
       case RuntimeTerm.Variable(variable) => RuntimeTerm.Variable(variable - 1)
@@ -46,6 +59,9 @@ object RuntimeBinding {
         RuntimeTerm.Lambda(parameterType, body.substituteTerm(index + 1, replacement), resultType)
       case RuntimeTerm.Fix(annotatedType, body) =>
         RuntimeTerm.Fix(annotatedType, body.substituteTerm(index + 1, replacement))
+      case RuntimeTerm.Fold(recursiveType, body) =>
+        RuntimeTerm.Fold(recursiveType, body.substituteTerm(index, replacement))
+      case RuntimeTerm.Unfold(inner) => RuntimeTerm.Unfold(inner.substituteTerm(index, replacement))
       case RuntimeTerm.Application(function, argument) =>
         RuntimeTerm.Application(
           function.substituteTerm(index, replacement),
@@ -77,7 +93,12 @@ object RuntimeBinding {
         )
     }
 
-    def shiftTypeVariables(by: Int, cutoff: Int = 0): RuntimeTerm = term match {
+    def shiftTypeVariables(by: Int, cutoff: Int = 0): RuntimeTerm = {
+      if (by == 0 || term.requiredTypeDepth <= cutoff) term
+      else shiftFreeTypeVariables(by, cutoff)
+    }
+
+    private def shiftFreeTypeVariables(by: Int, cutoff: Int): RuntimeTerm = term match {
       case RuntimeTerm.Variable(_) | RuntimeTerm.Global(_) | RuntimeTerm.Literal(_) | RuntimeTerm.Top => term
       case RuntimeTerm.Lambda(parameterType, body, resultType) =>
         RuntimeTerm.Lambda(
@@ -87,6 +108,9 @@ object RuntimeBinding {
         )
       case RuntimeTerm.Fix(annotatedType, body) =>
         RuntimeTerm.Fix(annotatedType.shiftTypeVariables(by, cutoff), body.shiftTypeVariables(by, cutoff))
+      case RuntimeTerm.Fold(recursiveType, body) =>
+        RuntimeTerm.Fold(recursiveType.shiftTypeVariables(by, cutoff), body.shiftTypeVariables(by, cutoff))
+      case RuntimeTerm.Unfold(inner) => RuntimeTerm.Unfold(inner.shiftTypeVariables(by, cutoff))
       case RuntimeTerm.Application(function, argument) =>
         RuntimeTerm.Application(function.shiftTypeVariables(by, cutoff), argument.shiftTypeVariables(by, cutoff))
       case RuntimeTerm.Merge(left, right) =>
@@ -122,7 +146,12 @@ object RuntimeBinding {
         )
     }
 
-    def substituteType(index: Int, replacement: Type): RuntimeTerm = term match {
+    def substituteType(index: Int, replacement: Type): RuntimeTerm = {
+      if (term.requiredTypeDepth <= index) term
+      else substituteFreeType(index, replacement)
+    }
+
+    private def substituteFreeType(index: Int, replacement: Type): RuntimeTerm = term match {
       case RuntimeTerm.Variable(_) | RuntimeTerm.Global(_) | RuntimeTerm.Literal(_) | RuntimeTerm.Top => term
       case RuntimeTerm.Lambda(parameterType, body, resultType) =>
         RuntimeTerm.Lambda(
@@ -135,6 +164,9 @@ object RuntimeBinding {
           annotatedType.substituteType(index, replacement),
           body.substituteType(index, replacement)
         )
+      case RuntimeTerm.Fold(recursiveType, body) =>
+        RuntimeTerm.Fold(recursiveType.substituteType(index, replacement), body.substituteType(index, replacement))
+      case RuntimeTerm.Unfold(inner) => RuntimeTerm.Unfold(inner.substituteType(index, replacement))
       case RuntimeTerm.Application(function, argument) =>
         RuntimeTerm.Application(
           function.substituteType(index, replacement),

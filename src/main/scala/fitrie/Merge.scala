@@ -105,6 +105,11 @@ private[fitrie] object FiTrieAlgebra {
           // ───────────────────────────── Index-Proj
           // Φ ; Q selects t
           case Request.Projection(_) => Result.Ok(continuation)
+
+          // unfold ∈ Q    unfold ↦ t ∈ Φ
+          // ─────────────────────────── Index-Unfold
+          // Φ ; Q selects t
+          case Request.Unfold => Result.Ok(continuation)
         }
       }
     }

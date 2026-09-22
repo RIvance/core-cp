@@ -154,6 +154,11 @@ object TypeExpansion {
         bound <- expand(disjointBound, context, scope)
         body <- expand(bodyType, context, scope.withType(name))
       } yield Type.ForAll(bound, body)
+    // Δ, Σ, Ξ, α ⊢ A ⇒ B
+    // ────────────────────────── Expand-Rec
+    // Δ, Σ, Ξ ⊢ μ α. A ⇒ μ α. B
+    case TypeSyntax.Recursive(name, bodyType) =>
+      expand(bodyType, context, scope.withType(name)).map(Type.Recursive(_))
     case TypeSyntax.Intersection(leftType, rightType) =>
       for {
         left <- expand(leftType, context, scope)
@@ -233,6 +238,14 @@ object TypeExpansion {
     // Σ↑ shifts the sort slots beneath the new, distinct binder.
     case Type.ForAll(bound, body) => Type.ForAll(
         transformSorts(bound, companions, polarity, insideConstructorField),
+        transformSorts(body, companions.map { case (negative, positive) =>
+          (negative + 1) -> (positive + 1)
+        }, polarity, insideConstructorField)
+      )
+    // Σ↑ ⊢ᵖ A ⇒ A′
+    // ─────────────────────── ST-Rec
+    // Σ ⊢ᵖ μ α. A ⇒ μ α. A′
+    case Type.Recursive(body) => Type.Recursive(
         transformSorts(body, companions.map { case (negative, positive) =>
           (negative + 1) -> (positive + 1)
         }, polarity, insideConstructorField)

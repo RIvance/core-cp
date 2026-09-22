@@ -15,6 +15,10 @@ final class ApplicativeDistribution private(applicableForm: ApplicableForm) {
     // {ℓ : A} ▹[κ] ⊤
     case (Type.Primitive(_), _) | (Type.Top, _) | (Type.Record(_, _), _) => Some(Type.Top)
 
+    // ───────────────── AD-Rec
+    // μ α. A ▹[κ] ⊤
+    case (Type.Recursive(_), _) => Some(Type.Top)
+
     // There is no applicative-distribution rule for ⊥ or an opaque α.
     case (Type.Bottom | Type.Variable(_), _) => None
 

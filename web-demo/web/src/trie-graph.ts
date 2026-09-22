@@ -692,6 +692,8 @@ function responseNodeLabel(response: TrieResponse, snapshot: TrieSnapshot): stri
 
 function requestLabel(request: TrieRequest, snapshot: TrieSnapshot): string {
   switch (request.kind) {
+    case "unfold":
+      return "ωᵘⁿᶠᵒˡᵈ";
     case "application":
       return `ωᵃᵖᵖ[${inlineTrieLabel(snapshot, request.argument)}]`;
     case "type-application":

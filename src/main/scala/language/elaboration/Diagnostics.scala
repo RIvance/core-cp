@@ -17,6 +17,7 @@ enum CpElaborationError {
   case TypeLambdaBoundMismatch(actualBound: Type, expectedBound: Type)
   case ExpectedFunction(expression: Expression, actualType: Type)
   case ExpectedUniversal(expression: Expression, actualType: Type)
+  case ExpectedRecursiveType(actualType: Type)
   case ExpectedRecord(expression: Expression, actualType: Type)
   case MissingRecordField(expression: Expression, label: String, actualType: Type)
   case ExpectedTrait(expression: Expression, actualType: Type)

@@ -2,7 +2,7 @@ package cp.fiobs.typing
 
 import cp.fiobs.*
 
-/** Decides the paper's contextual disjointness rules without retaining proofs. */
+/** Decides contextual disjointness, with finite possible-route certificates for recursive interfaces. */
 final class Disjointness private(context: TypeContext) {
   def relates(leftType: Type, rightType: Type): Boolean =
     search(leftType, rightType, context)
@@ -103,6 +103,22 @@ final class Disjointness private(context: TypeContext) {
         rightBody,
         currentContext.extend(Type.Intersection(leftBound, rightBound))
       )
+
+    // M(μα. A) ∩ M(μβ. B) = ∅
+    // ─────────────────────────── D-Rec
+    // Δ ⊢ μα. A ∗ μβ. B
+    // M is the finite may-route language defined in PossibleRoutes, not a TopLike test.
+    case (left @ Type.Recursive(_), right @ Type.Recursive(_)) => PossibleRoutes.areDisjoint(left, right)
+
+    // H ∈ {p, A ⇾ B, ∀(α ∗ A). B, {ℓ : A}}
+    // ───────────────────────────────────────── D-RecHead
+    // Δ ⊢ μα. C ∗ H
+    //
+    // H ∈ {p, A ⇾ B, ∀(α ∗ A). B, {ℓ : A}}
+    // ───────────────────────────────────────── D-HeadRec
+    // Δ ⊢ H ∗ μα. C
+    case (Type.Recursive(_), Type.Primitive(_) | Type.Arrow(_, _) | Type.ForAll(_, _) | Type.Record(_, _)) => true
+    case (Type.Primitive(_) | Type.Arrow(_, _) | Type.ForAll(_, _) | Type.Record(_, _), Type.Recursive(_)) => true
 
     // ℓ₁ ≠ ℓ₂
     // ───────────────────── D-RcdNe

@@ -80,6 +80,32 @@ private[elaboration] final class ExpressionElaborator(context: ElaborationContex
         }
       }
 
+    // R = μ α. A    Δ ; Γ ⊢ E ⇐ A[α ↦ R] ↝ e
+    // ─────────────────────────────────────────── E-Fold
+    // Δ ; Γ ⊢ fold[R] E ⇒ R ↝ fold[⟦R⟧] e
+    case Expression.Fold(recursiveType, body) =>
+      context.expand(recursiveType).flatMap { expandedType =>
+        expandedType.unfolded match {
+          case Some(bodyType) => check(body, bodyType).map { elaboratedBody =>
+            ElaboratedExpression(Term.Fold(TypeTranslation.toFiobs(expandedType), elaboratedBody), expandedType)
+          }
+          case None => fail(CpElaborationError.ExpectedRecursiveType(expandedType))
+        }
+      }
+
+    // R = μ α. A    Δ ; Γ ⊢ E ⇐ R ↝ e
+    // ─────────────────────────────────────────────────── E-Unfold
+    // Δ ; Γ ⊢ unfold[R] E ⇒ A[α ↦ R] ↝ unfold[⟦R⟧] e
+    case Expression.Unfold(recursiveType, inner) =>
+      context.expand(recursiveType).flatMap { expandedType =>
+        expandedType.unfolded match {
+          case Some(bodyType) => check(inner, expandedType).map { elaboratedInner =>
+            ElaboratedExpression(Term.Unfold(TypeTranslation.toFiobs(expandedType), elaboratedInner), bodyType)
+          }
+          case None => fail(CpElaborationError.ExpectedRecursiveType(expandedType))
+        }
+      }
+
     case Expression.Merge(left, right) =>
       for {
         typedLeft <- infer(left)

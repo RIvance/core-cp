@@ -307,12 +307,14 @@ final class BrowserApi {
       kind = "projection",
       label = label.value
     )
+    case EvaluationRequest.Unfold => js.Dynamic.literal(kind = "unfold")
   }
 
   private def renderRequest(request: EvaluationRequest): String = request match {
     case EvaluationRequest.Application(argument) => s"ωᵃᵖᵖ[N${argument.value}]"
     case EvaluationRequest.TypeApplication(pathInterface) => s"ωᵗᵃᵖᵖ[$pathInterface]"
     case EvaluationRequest.Projection(label) => s"ωᵖʳᵒʲ_${label.value}"
+    case EvaluationRequest.Unfold => "ωᵘⁿᶠᵒˡᵈ"
   }
 
   private def renderRootKeyExpression(expression: RootKeyExpression): String = expression match {
@@ -347,12 +349,14 @@ final class BrowserApi {
   private def renderRoute(routeKey: RouteKey): String = routeKey match {
     case RouteKey.Application => "κᵃᵖᵖ"
     case RouteKey.TypeApplication => "κᵗᵃᵖᵖ"
+    case RouteKey.Unfold => "κᵘⁿᶠᵒˡᵈ"
     case RouteKey.Projection(label) => s"κᵖʳᵒʲ_${label.value}"
   }
 
   private def renderPaperRoute(routeKey: RouteKey): String = routeKey match {
     case RouteKey.Application => "appₓ"
     case RouteKey.TypeApplication => "tappᵅ"
+    case RouteKey.Unfold => "unfold"
     case RouteKey.Projection(label) => s"proj_${label.value}"
   }
 

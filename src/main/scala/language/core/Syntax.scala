@@ -23,6 +23,7 @@ enum TypeSyntax {
   case Bottom
   case Arrow(parameterType: TypeSyntax, resultType: TypeSyntax)
   case ForAll(typeParameter: String, disjointBound: TypeSyntax, bodyType: TypeSyntax)
+  case Recursive(typeParameter: String, bodyType: TypeSyntax)
   case Intersection(leftType: TypeSyntax, rightType: TypeSyntax)
   case Record(label: String, fieldType: TypeSyntax)
   case Trait(requiredInterface: TypeSyntax, providedInterface: TypeSyntax)
@@ -39,6 +40,7 @@ enum TypeSyntax {
       parameterType.referencedNames(boundVariables) ++ resultType.referencedNames(boundVariables)
     case ForAll(typeParameter, disjointBound, bodyType) =>
       disjointBound.referencedNames(boundVariables) ++ bodyType.referencedNames(boundVariables + typeParameter)
+    case Recursive(typeParameter, bodyType) => bodyType.referencedNames(boundVariables + typeParameter)
     case Intersection(leftType, rightType) =>
       leftType.referencedNames(boundVariables) ++ rightType.referencedNames(boundVariables)
     case Record(_, fieldType) => fieldType.referencedNames(boundVariables)
@@ -117,6 +119,8 @@ enum Expression {
   case Application(function: Expression, argument: Expression)
   case TypeLambda(binder: TypeBinder, body: Expression)
   case TypeApplication(function: Expression, argumentType: TypeSyntax)
+  case Fold(recursiveType: TypeSyntax, body: Expression)
+  case Unfold(recursiveType: TypeSyntax, expression: Expression)
   case Merge(left: Expression, right: Expression)
   case Record(members: List[Member])
   case Projection(record: Expression, label: String)
@@ -157,6 +161,8 @@ enum Expression {
     case TypeLambda(binder, body) => TypeLambda(binder, body.withoutSourceSpans)
     case TypeApplication(function, argumentType) =>
       TypeApplication(function.withoutSourceSpans, argumentType)
+    case Fold(recursiveType, body) => Fold(recursiveType, body.withoutSourceSpans)
+    case Unfold(recursiveType, expression) => Unfold(recursiveType, expression.withoutSourceSpans)
     case Merge(left, right) => Merge(left.withoutSourceSpans, right.withoutSourceSpans)
     case Record(members) => Record(members.map(_.withoutSourceSpans))
     case Projection(record, label) => Projection(record.withoutSourceSpans, label)

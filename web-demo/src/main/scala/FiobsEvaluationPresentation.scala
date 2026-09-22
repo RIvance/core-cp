@@ -34,6 +34,11 @@ private[visualizer] object FiobsEvaluationPresentation {
   private def valueDocument(value: FullyEvaluatedValue): PrettyDocument = value match {
     case FullyEvaluatedValue.Primitive(primitive) => PrettyDocument.text(renderPrimitiveValue(primitive))
     case FullyEvaluatedValue.Top => PrettyDocument.text("top")
+    case FullyEvaluatedValue.Fold(recursiveType, body) => PrettyDocument.concatenate(
+        PrettyDocument.text(s"fold[${recursiveType.render(64)}] ("),
+        valueDocument(body),
+        PrettyDocument.text(")")
+      )
     case FullyEvaluatedValue.Lambda(parameterType, _, resultType) => PrettyDocument.concatenate(
         PrettyDocument.text("⟨function : "),
         PrettyDocument.text(Type.Arrow(parameterType, resultType).render(64)),

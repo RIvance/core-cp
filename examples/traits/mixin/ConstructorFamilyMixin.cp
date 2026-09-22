@@ -1,3 +1,5 @@
+// expected: "48 + -(2)"
+
 type Eval = { eval: Int; };
 type Print = { print: String; };
 
@@ -23,3 +25,12 @@ def addNegation[Base * NegationSig<Eval & Print>](base: Trait[Base]) =
     (Negate expression).eval = 0 - expression.eval;
     (Negate expression).print = "-(" ++ expression.print ++ ")";
   };
+
+def family = new addNegation[AddSig<Eval & Print>](evaluateAdd ,, printAdd);
+
+def expression = new family.Add(
+  new family.Literal(48, "48"),
+  new family.Negate(new family.Literal(2, "2"))
+);
+
+def main: String = if expression.eval == 46 then expression.print else "unexpected result";
