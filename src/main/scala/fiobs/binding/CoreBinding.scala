@@ -13,6 +13,10 @@ object Binding {
         Term.Lambda(body.substituteGlobals(replacements.view.mapValues(_.shiftTermVariables(1)).toMap))
       case Term.Fix(annotatedType, body) =>
         Term.Fix(annotatedType, body.substituteGlobals(replacements.view.mapValues(_.shiftTermVariables(1)).toMap))
+      case Term.Fold(recursiveType, body) =>
+        Term.Fold(recursiveType, body.substituteGlobals(replacements))
+      case Term.Unfold(recursiveType, inner) =>
+        Term.Unfold(recursiveType, inner.substituteGlobals(replacements))
       case Term.Application(function, argument) =>
         Term.Application(function.substituteGlobals(replacements), argument.substituteGlobals(replacements))
       case Term.Merge(left, right) =>
@@ -41,6 +45,10 @@ object Binding {
       case Term.Lambda(body) => Term.Lambda(body.shiftTermVariables(by, cutoff + 1))
       case Term.Fix(annotatedType, body) =>
         Term.Fix(annotatedType, body.shiftTermVariables(by, cutoff + 1))
+      case Term.Fold(recursiveType, body) =>
+        Term.Fold(recursiveType, body.shiftTermVariables(by, cutoff))
+      case Term.Unfold(recursiveType, inner) =>
+        Term.Unfold(recursiveType, inner.shiftTermVariables(by, cutoff))
       case Term.Application(function, argument) =>
         Term.Application(function.shiftTermVariables(by, cutoff), argument.shiftTermVariables(by, cutoff))
       case Term.Merge(left, right) =>
@@ -70,6 +78,10 @@ object Binding {
       case Term.Lambda(body) => Term.Lambda(body.substituteTerm(index + 1, replacement))
       case Term.Fix(annotatedType, body) =>
         Term.Fix(annotatedType, body.substituteTerm(index + 1, replacement))
+      case Term.Fold(recursiveType, body) =>
+        Term.Fold(recursiveType, body.substituteTerm(index, replacement))
+      case Term.Unfold(recursiveType, inner) =>
+        Term.Unfold(recursiveType, inner.substituteTerm(index, replacement))
       case Term.Application(function, argument) =>
         Term.Application(function.substituteTerm(index, replacement), argument.substituteTerm(index, replacement))
       case Term.Merge(left, right) =>
@@ -97,6 +109,10 @@ object Binding {
       case Term.Lambda(body) => Term.Lambda(body.shiftTypeVariables(by, cutoff))
       case Term.Fix(annotatedType, body) =>
         Term.Fix(annotatedType.shiftTypeVariables(by, cutoff), body.shiftTypeVariables(by, cutoff))
+      case Term.Fold(recursiveType, body) =>
+        Term.Fold(recursiveType.shiftTypeVariables(by, cutoff), body.shiftTypeVariables(by, cutoff))
+      case Term.Unfold(recursiveType, inner) =>
+        Term.Unfold(recursiveType.shiftTypeVariables(by, cutoff), inner.shiftTypeVariables(by, cutoff))
       case Term.Application(function, argument) =>
         Term.Application(function.shiftTypeVariables(by, cutoff), argument.shiftTypeVariables(by, cutoff))
       case Term.Merge(left, right) =>
@@ -126,6 +142,10 @@ object Binding {
       case Term.Lambda(body) => Term.Lambda(body.substituteType(index, replacement))
       case Term.Fix(annotatedType, body) =>
         Term.Fix(annotatedType.substituteType(index, replacement), body.substituteType(index, replacement))
+      case Term.Fold(recursiveType, body) =>
+        Term.Fold(recursiveType.substituteType(index, replacement), body.substituteType(index, replacement))
+      case Term.Unfold(recursiveType, inner) =>
+        Term.Unfold(recursiveType.substituteType(index, replacement), inner.substituteType(index, replacement))
       case Term.Application(function, argument) =>
         Term.Application(function.substituteType(index, replacement), argument.substituteType(index, replacement))
       case Term.Merge(left, right) =>

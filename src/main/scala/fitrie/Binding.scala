@@ -128,7 +128,7 @@ private[fitrie] object FiTrieBinding {
   private def shiftRequestTermVariables(request: Request, by: Int, cutoff: Int): Request = request match {
     case Request.Application(argument) =>
       Request.Application(shiftTrieTermVariables(argument, by, cutoff))
-    case Request.TypeApplication(_) | Request.Projection(_) => request
+    case Request.TypeApplication(_) | Request.Projection(_) | Request.Unfold => request
   }
 
   private def shiftTrieNodeReferences(trie: FiTrie, by: Int, cutoff: Int): FiTrie = {
@@ -178,7 +178,7 @@ private[fitrie] object FiTrieBinding {
   private def shiftRequestNodeReferences(request: Request, by: Int, cutoff: Int): Request = request match {
     case Request.Application(argument) =>
       Request.Application(shiftTrieNodeReferences(argument, by, cutoff))
-    case Request.TypeApplication(_) | Request.Projection(_) => request
+    case Request.TypeApplication(_) | Request.Projection(_) | Request.Unfold => request
   }
 
   private def shiftTriePathVariables(trie: FiTrie, by: Int, cutoff: Int): FiTrie = {
@@ -232,7 +232,7 @@ private[fitrie] object FiTrieBinding {
         Request.Application(shiftTriePathVariables(argument, by, cutoff))
       case Request.TypeApplication(pathInterface) =>
         Request.TypeApplication(pathInterface.shiftPathVariables(by, cutoff))
-      case Request.Projection(_) => request
+      case Request.Projection(_) | Request.Unfold => request
     }
   }
 
@@ -296,7 +296,7 @@ private[fitrie] object FiTrieBinding {
     case Request.TypeApplication(pathInterface) => Request.TypeApplication(
       pathInterface.substitutePathVariable(index, replacement)
     )
-    case Request.Projection(_) => request
+    case Request.Projection(_) | Request.Unfold => request
   }
 
   private def substituteTrieTermVariable(
@@ -416,7 +416,7 @@ private[fitrie] object FiTrieBinding {
             nodeReferenceDepth,
             selectedRootKeys
           ))
-          case request @ (Request.TypeApplication(_) | Request.Projection(_)) => request
+          case request @ (Request.TypeApplication(_) | Request.Projection(_) | Request.Unfold) => request
         })
       )
 
@@ -621,7 +621,7 @@ private[fitrie] object FiTrieBinding {
               .map(substitutedArgument =>
                 substitutedRequests + Request.Application(substitutedArgument)
               )
-          case Request.TypeApplication(_) | Request.Projection(_) =>
+          case Request.TypeApplication(_) | Request.Projection(_) | Request.Unfold =>
             Result.Ok(substitutedRequests + request)
         }
       }
@@ -672,7 +672,7 @@ private[fitrie] object FiTrieBinding {
             isWellScoped(argument, termVariableDepth, nodeReferenceDepth, pathVariableDepth)
           case Request.TypeApplication(pathInterface) =>
             pathInterface.isWellScoped(pathVariableDepth)
-          case Request.Projection(_) => true
+          case Request.Projection(_) | Request.Unfold => true
         }
     // d ⊢ t
     // ───────────── Scope-Filter

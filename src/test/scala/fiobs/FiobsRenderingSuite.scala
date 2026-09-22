@@ -35,4 +35,19 @@ class FiobsRenderingSuite extends munit.FunSuite {
     assert(rendered.contains("{value : ⊤}"))
     assert(rendered.contains('\n'))
   }
+
+  test("applications and projections distinguish unfolding their receiver from unfolding their result") {
+    val recursive = Type.Recursive(Type.Arrow(Type.Integer, Type.Integer))
+    val receiver = Term.Variable(0)
+    val argument = Term.Literal(PrimitiveValue.Integer(42))
+    val unfold = Term.Unfold(recursive, receiver)
+
+    assertEquals(Term.Application(unfold, argument).render(), "(unfold[μα₀. Int → Int] x₀) 42")
+    assertEquals(
+      Term.Unfold(recursive, Term.Application(receiver, argument)).render(),
+      "unfold[μα₀. Int → Int] (x₀ 42)"
+    )
+    val record = Term.Unfold(Type.Recursive(Type.Record("value", Type.Integer)), receiver)
+    assertEquals(Term.Projection(record, "value").render(), "(unfold[μα₀. {value : Int}] x₀).value")
+  }
 }

@@ -13,6 +13,8 @@ enum RuntimeTerm {
   case Top
   case Lambda(parameterType: Type, body: RuntimeTerm, resultType: Type)
   case Fix(annotatedType: Type, body: RuntimeTerm)
+  case Fold(recursiveType: Type, body: RuntimeTerm)
+  case Unfold(term: RuntimeTerm)
   case Application(function: RuntimeTerm, argument: RuntimeTerm)
   case Merge(left: RuntimeTerm, right: RuntimeTerm)
   case Cast(term: RuntimeTerm, targetType: Type)
@@ -46,6 +48,10 @@ enum RuntimeTerm {
     // ───────────────────────── Ready-Rcd
     // ◉ʳ ⟨{ℓ = r}⟩^{ℓ : A}
     case RuntimeTerm.Record(_, _, _) => true
+
+    // ───────────────── Ready-Fold
+    // ◉ʳ ⟨fold r⟩ᴿ
+    case RuntimeTerm.Fold(_, _) => true
     case _ => false
   }
 
@@ -63,6 +69,7 @@ enum RuntimeTerm {
       } yield Value.Merge(leftValue, rightValue)
     case RuntimeTerm.Record(label, field, fieldType) =>
       Result.Ok(Value.Record(label, RecordField.Suspended(field), fieldType))
+    case RuntimeTerm.Fold(recursiveType, body) => Result.Ok(Value.Fold(recursiveType, body))
     case _ => Result.Err(EvaluationError.InvalidNormalForm(this))
   }
 }
@@ -73,6 +80,8 @@ enum RecordField {
 
 /** Semantic results keep primitive data in PrimitiveValue instead of flattening it. */
 enum Value {
+  /** The payload is suspended, just like a record field. */
+  case Fold(recursiveType: Type, body: RuntimeTerm)
   case Primitive(value: PrimitiveValue)
   case Top
   case Lambda(parameterType: Type, body: RuntimeTerm, resultType: Type)
@@ -81,8 +90,9 @@ enum Value {
   case Record(label: String, field: RecordField, fieldType: Type)
 }
 
-/** A final Fiobs value whose lazy record fields have been recursively evaluated. */
+/** A final Fiobs value whose lazy record fields and folded payloads have been recursively evaluated. */
 enum FullyEvaluatedValue {
+  case Fold(recursiveType: Type, body: FullyEvaluatedValue)
   case Primitive(value: PrimitiveValue)
   case Top
   case Lambda(parameterType: Type, body: RuntimeTerm, resultType: Type)

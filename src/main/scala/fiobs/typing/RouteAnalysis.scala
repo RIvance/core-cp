@@ -33,6 +33,12 @@ final class RouteAnalysis private (context: TypeContext) {
     case Type.ForAll(disjointBound, bodyType) =>
       RouteAnalysis(context.extend(disjointBound)).isSilent(bodyType)
 
+    // M(μα. A) = ∅
+    // ─────────────── Sil-Rec
+    // Δ ⊢ μα. A ∅ᵒ
+    // M erases universal guards and treats opaque variables conservatively (see PossibleRoutes).
+    case Type.Recursive(_) => PossibleRoutes(inputType).isEmpty
+
     // Δ ⊢ A ∅ᵒ
     // ───────────────── Sil-Rcd
     // Δ ⊢ {ℓ : A} ∅ᵒ
@@ -48,6 +54,8 @@ final class RouteAnalysis private (context: TypeContext) {
       Type.Intersection(collisionShapeOf(leftType), collisionShapeOf(rightType))
     case Type.ForAll(disjointBound, bodyType) =>
       Type.ForAll(collisionShapeOf(disjointBound), collisionShapeOf(bodyType))
+    // CShape(μα. A) = μα. CShape(A); the binder and its de Bruijn scope are preserved.
+    case Type.Recursive(bodyType) => Type.Recursive(collisionShapeOf(bodyType))
     case Type.Record(label, fieldType) => Type.Record(label, collisionShapeOf(fieldType))
   }
 

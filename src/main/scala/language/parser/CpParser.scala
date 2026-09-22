@@ -73,6 +73,7 @@ object CpParser extends RegexParsers {
     "extends",
     "false",
     "forall",
+    "fold",
     "from",
     "if",
     "impl",
@@ -80,8 +81,10 @@ object CpParser extends RegexParsers {
     "implements",
     "in",
     "inherits",
+    "interface",
     "let",
     "module",
+    "mu",
     "new",
     "open",
     "override",
@@ -93,6 +96,7 @@ object CpParser extends RegexParsers {
     "trait",
     "true",
     "type",
+    "unfold",
     "where"
   )
 
@@ -146,7 +150,26 @@ object CpParser extends RegexParsers {
   }
 
   private def declaration: Parser[Declaration] = {
-    typeDeclaration | implementationDeclaration | methodDeclaration | termDeclaration
+    interfaceDeclaration | typeDeclaration | implementationDeclaration | methodDeclaration | termDeclaration
+  }
+
+  private def interfaceDeclaration: Parser[Declaration] = {
+    // {ℓ̄ : Ā} ⇝ R
+    // ───────────────────────────────────────────────────────────────────────── Parse-Interface
+    // interface X⟨S̄⟩ {ℓ̄ : Ā} ⇝ type X⟨S̄⟩ = μ X. R
+    // The recursive binder owns self references; later phases receive an ordinary type declaration.
+    for {
+      _ <- word("interface")
+      name <- identifier
+      sortParameters <- opt("<" ~> rep1sep(identifier, ",") <~ ">")
+      body <- recordType
+      _ <- opt(";")
+    } yield Declaration.TypeSignature(
+      name,
+      sortParameters.getOrElse(Nil),
+      TypeSyntax.Top,
+      TypeSyntax.Recursive(name, body)
+    )
   }
 
   private def typeDeclaration: Parser[Declaration] = {
@@ -351,7 +374,13 @@ object CpParser extends RegexParsers {
   }
 
   private def inputType: Parser[TypeSyntax] = {
-    forallType | arrowType
+    forallType | recursiveType | arrowType
+  }
+
+  private def recursiveType: Parser[TypeSyntax] = {
+    (word("mu") | "μ") ~> identifier ~ ("." ~> inputType) ^^ {
+      case parameter ~ bodyType => TypeSyntax.Recursive(parameter, bodyType)
+    }
   }
 
   private def forallType: Parser[TypeSyntax] = {
@@ -412,8 +441,11 @@ object CpParser extends RegexParsers {
   }
 
   private def recordType: Parser[TypeSyntax] = {
-    "{" ~> rep1(recordTypeField <~ opt(";")) <~ "}" ^^ { fields =>
-      TypeSyntax.records(fields.head, fields.tail)
+    // ───────────── Parse-EmptyRecordType
+    // {} ⇝ ⊤
+    "{" ~> rep(recordTypeField <~ opt(";")) <~ "}" ^^ {
+      case Nil => TypeSyntax.Top
+      case first :: remaining => TypeSyntax.records(first, remaining)
     }
   }
 
@@ -639,6 +671,12 @@ object CpParser extends RegexParsers {
    */
   private def newExpression: Parser[Expression] = {
     ("new" ~> newExpression ^^ Expression.New.apply) |
+      (word("fold") ~> ("[" ~> inputType <~ "]") ~ newExpression ^^ {
+        case recursiveType ~ body => Expression.Fold(recursiveType, body)
+      }) |
+      (word("unfold") ~> ("[" ~> inputType <~ "]") ~ newExpression ^^ {
+        case recursiveType ~ inner => Expression.Unfold(recursiveType, inner)
+      }) |
       applicationExpression
   }
 

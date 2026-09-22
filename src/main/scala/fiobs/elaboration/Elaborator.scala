@@ -51,6 +51,8 @@ object Elaborator {
         } yield Type.ForAll(loweredBound, loweredBody)
       case SurfaceType.Record(label, fieldType) =>
         lowerType(fieldType, typeScope).map(Type.Record(label, _))
+      case SurfaceType.Recursive(parameter, body) =>
+        lowerType(body, parameter :: typeScope).map(Type.Recursive(_))
     }
   }
 
@@ -74,6 +76,16 @@ object Elaborator {
           loweredType <- lowerType(annotatedType, typeScope)
           loweredBody <- elaborateExpression(body, name :: termScope, typeScope)
         } yield Term.Fix(loweredType, loweredBody)
+      case Expr.Fold(recursiveType, body) =>
+        for {
+          loweredType <- lowerType(recursiveType, typeScope)
+          loweredBody <- elaborateExpression(body, termScope, typeScope)
+        } yield Term.Fold(loweredType, loweredBody)
+      case Expr.Unfold(recursiveType, term) =>
+        for {
+          loweredType <- lowerType(recursiveType, typeScope)
+          loweredTerm <- elaborateExpression(term, termScope, typeScope)
+        } yield Term.Unfold(loweredType, loweredTerm)
       case Expr.Application(function, argument) =>
         for {
           loweredFunction <- elaborateExpression(function, termScope, typeScope)

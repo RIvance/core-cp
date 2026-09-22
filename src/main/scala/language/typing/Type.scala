@@ -22,6 +22,7 @@ final case class UniversalApplicationView(
 /**
  * Expanded CP types. Variables are de Bruijn indices; forall bodies add one
  * binder, while their disjointness bounds remain in the enclosing scope.
+ * Recursive bodies bind one variable, distinct from enclosing forall and sort binders.
  * Aliases and signature applications cannot occur in this representation.
  * Structural equality therefore includes alpha-equivalence.
  * Merge inference retains the intersection synthesized by its target term.
@@ -35,6 +36,7 @@ enum Type {
   case Bottom
   case Arrow(parameterType: Type, resultType: Type)
   case ForAll(disjointBound: Type, bodyType: Type)
+  case Recursive(bodyType: Type)
   case Intersection(leftType: Type, rightType: Type)
   case Record(label: String, fieldType: Type)
   case Trait(requiredInterface: Type, providedInterface: Type)
@@ -48,14 +50,16 @@ enum Type {
   }
 
   /** Simultaneously substitutes and removes the innermost free binders, then normalizes exact-top units. */
-  def instantiate(arguments: List[Type]): Type = {
+  def instantiate(arguments: List[Type]): Type = substituteBinders(arguments).normalized
+
+  private def substituteBinders(arguments: List[Type]): Type = {
     mapVariables(0) { (index, depth) =>
       if (index < depth) Variable(index)
       else arguments.lift(index - depth) match {
         case Some(argument) => argument.shiftTypeVariables(depth)
         case None => Variable(index - arguments.size)
       }
-    }.normalized
+    }
   }
 
   /** Normalizes type interfaces by A ∧ ⊤ ≃ A; it does not construct or cast a term. */
@@ -63,6 +67,7 @@ enum Type {
     case Primitive(_) | Variable(_) | Top | Bottom => this
     case Arrow(parameter, result) => Arrow(parameter.normalized, result.normalized)
     case ForAll(bound, body) => ForAll(bound.normalized, body.normalized)
+    case Recursive(body) => Recursive(body.normalized)
     case Intersection(left, right) => Type.intersection(left.normalized, right.normalized)
     case Record(label, fieldType) => Record(label, fieldType.normalized)
     case Trait(required, provided) => Trait(required.normalized, provided.normalized)
@@ -73,6 +78,7 @@ enum Type {
     case Variable(index) => index >= 0 && index < depth
     case Arrow(parameterType, resultType) => parameterType.isWellScoped(depth) && resultType.isWellScoped(depth)
     case ForAll(bound, body) => bound.isWellScoped(depth) && body.isWellScoped(depth + 1)
+    case Recursive(body) => body.isWellScoped(depth + 1)
     case Intersection(left, right) => left.isWellScoped(depth) && right.isWellScoped(depth)
     case Record(_, fieldType) => fieldType.isWellScoped(depth)
     case Trait(required, provided) => required.isWellScoped(depth) && provided.isWellScoped(depth)
@@ -85,6 +91,7 @@ enum Type {
       Arrow(parameterType.mapVariables(depth)(variable), resultType.mapVariables(depth)(variable))
     case ForAll(bound, body) =>
       ForAll(bound.mapVariables(depth)(variable), body.mapVariables(depth + 1)(variable))
+    case Recursive(body) => Recursive(body.mapVariables(depth + 1)(variable))
     case Intersection(left, right) =>
       Intersection(left.mapVariables(depth)(variable), right.mapVariables(depth)(variable))
     case Record(label, fieldType) => Record(label, fieldType.mapVariables(depth)(variable))
@@ -93,6 +100,12 @@ enum Type {
   }
 
   def render: String = diagnosticSyntax(Nil).render
+
+  /** One explicit unfolding: U(μ α. A) = A[α ↦ μ α. A]. */
+  def unfolded: Option[Type] = this match {
+    case Recursive(body) => Some(body.substituteBinders(List(this)))
+    case _ => None
+  }
 
   private def diagnosticSyntax(scope: List[String]): TypeSyntax = this match {
     case Primitive(kind) => TypeSyntax.Primitive(kind)
@@ -105,6 +118,9 @@ enum Type {
     case ForAll(bound, body) =>
       val parameter = s"T${scope.size}"
       TypeSyntax.ForAll(parameter, bound.diagnosticSyntax(scope), body.diagnosticSyntax(parameter :: scope))
+    case Recursive(body) =>
+      val parameter = s"T${scope.size}"
+      TypeSyntax.Recursive(parameter, body.diagnosticSyntax(parameter :: scope))
     case Intersection(left, right) =>
       TypeSyntax.Intersection(left.diagnosticSyntax(scope), right.diagnosticSyntax(scope))
     case Record(label, fieldType) => TypeSyntax.Record(label, fieldType.diagnosticSyntax(scope))
@@ -167,7 +183,9 @@ enum Type {
     //
     // ───────────── AD-Rcd
     // {ℓ : A} ▹ᵃ ⊤
-    case Primitive(_) | Top | Record(_, _) => ApplicativeView.Inert
+    // ───────────────── AD-Rec
+    // μ α. A ▹ᵃ ⊤
+    case Primitive(_) | Top | Record(_, _) | Recursive(_) => ApplicativeView.Inert
 
     // Fiobs has no applicative-distribution rule for ⊥ or an opaque α.
     case Bottom | Variable(_) => ApplicativeView.Blocked
@@ -210,7 +228,9 @@ enum Type {
     //
     // ───────────── AD-Rcd
     // {ℓ : A} ▹ᵘ ⊤
-    case Primitive(_) | Top | Record(_, _) => ApplicativeView.Inert
+    // ───────────────── AD-Rec
+    // μ α. A ▹ᵘ ⊤
+    case Primitive(_) | Top | Record(_, _) | Recursive(_) => ApplicativeView.Inert
 
     // Fiobs has no applicative-distribution rule for ⊥ or an opaque α.
     case Bottom | Variable(_) => ApplicativeView.Blocked

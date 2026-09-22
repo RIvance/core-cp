@@ -166,6 +166,8 @@ class PaperTrieRenderer {
 
   private requestDocument(request: TrieRequest, ancestors: ReadonlySet<number>): Document {
     switch (request.kind) {
+      case "unfold":
+        return text("unfold");
       case "application":
         return group(concatenate(
           text("app["),

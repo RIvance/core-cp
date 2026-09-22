@@ -49,6 +49,9 @@ export type TrieResponse =
 
 export type TrieRequest =
   | {
+      readonly kind: "unfold";
+    }
+  | {
       readonly kind: "application";
       readonly argument: number;
     }

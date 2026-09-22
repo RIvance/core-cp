@@ -16,21 +16,26 @@ final case class PathVariableIndex(value: Int) {
   require(value >= 0, "a path-variable index cannot be negative")
 }
 
+final case class RecursivePathVariableIndex(value: Int) {
+  require(value >= 0, "a recursive path-variable index cannot be negative")
+}
+
 enum RouteKey {
   case Application
   case TypeApplication
   case Projection(label: FieldLabel)
+  case Unfold
 
   def rootKey: RootKey = RootKey.Route(this)
 
   private[fitrie] def introducedTermVariables: Int = this match {
     case Application => 1
-    case TypeApplication | Projection(_) => 0
+    case TypeApplication | Projection(_) | Unfold => 0
   }
 
   private[fitrie] def introducedPathVariables: Int = this match {
     case TypeApplication => 1
-    case Application | Projection(_) => 0
+    case Application | Projection(_) | Unfold => 0
   }
 }
 
@@ -107,11 +112,13 @@ enum Request {
   case Application(argument: FiTrie)
   case TypeApplication(pathInterface: ObservationPathInterface)
   case Projection(label: FieldLabel)
+  case Unfold
 
   def routeKey: RouteKey = this match {
     case Application(_) => RouteKey.Application
     case TypeApplication(_) => RouteKey.TypeApplication
     case Projection(label) => RouteKey.Projection(label)
+    case Unfold => RouteKey.Unfold
   }
 }
 

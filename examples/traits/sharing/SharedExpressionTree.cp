@@ -1,3 +1,5 @@
+// expected: 512
+
 type Eval = { eval: Int; };
 type Doubled<Expression> = { doubled: Expression; };
 
@@ -17,7 +19,7 @@ def doubleExpressions[Expression] =
     (Add left right).doubled = new self.Add(left.doubled, right.doubled);
   };
 
-def expressionTree[Expression] = trait [self: ExpressionSig<Expression>] => {
+def expressionTree[Expression](depth: Int) = trait [self: ExpressionSig<Expression>] => {
   tree = {
     let rec build: Int -> Expression = (depth: Int) =>
       if depth == 0 then new self.Literal(1)
@@ -25,10 +27,12 @@ def expressionTree[Expression] = trait [self: ExpressionSig<Expression>] => {
         let shared = build(depth - 1);
         new self.Add(shared, shared)
       };
-    build(20)
+    build(depth)
   };
 };
 
 def evaluatedFamily = new evaluateExpressions;
 def family = evaluatedFamily ,, (doubleExpressions[Eval] ^ evaluatedFamily);
-def expressions = expressionTree[Eval & Doubled<Eval>] ^ family;
+// Eight levels give 256 leaves; doubling each literal gives 512.
+def expressions = expressionTree[Eval & Doubled<Eval>](8) ^ family;
+def main: Int = expressions.tree.doubled.eval;

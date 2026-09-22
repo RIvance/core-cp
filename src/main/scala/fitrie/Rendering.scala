@@ -144,6 +144,7 @@ private[fitrie] object FiTrieRendering {
       PrettyDocument.text("]")
     )
     case Request.Projection(label) => PrettyDocument.text(s"ωᵖʳᵒʲ_${label.value}")
+    case Request.Unfold => PrettyDocument.text("ωᵘⁿᶠᵒˡᵈ")
   }
 
   private def rootKeyExpressionDocument(expression: RootKeyExpression): PrettyDocument = {
@@ -207,6 +208,7 @@ private[fitrie] object FiTrieRendering {
     case RouteKey.TypeApplication if showApplicationBinder => PrettyDocument.text("κᵗᵃᵖᵖᵅ₀")
     case RouteKey.TypeApplication => PrettyDocument.text("κᵗᵃᵖᵖ")
     case RouteKey.Projection(label) => PrettyDocument.text(s"κᵖʳᵒʲ_${label.value}")
+    case RouteKey.Unfold => PrettyDocument.text("κᵘⁿᶠᵒˡᵈ")
   }
 
   private def primitiveTypeDocument(primitiveType: PrimitiveType): PrettyDocument = {
@@ -289,6 +291,7 @@ private[fitrie] object FiTrieRendering {
     case Request.Application(argument) =>
       (0, PrettyDocument.render(trieDocument(argument), Int.MaxValue))
     case Request.TypeApplication(pathInterface) => (1, pathInterface.toString)
+    case Request.Unfold => (3, "")
     case Request.Projection(label) => (2, label.value)
   }
 
@@ -302,6 +305,7 @@ private[fitrie] object FiTrieRendering {
   private def routeSortKey(routeKey: RouteKey): (Int, String) = routeKey match {
     case RouteKey.Application => (0, "")
     case RouteKey.TypeApplication => (1, "")
+    case RouteKey.Unfold => (3, "")
     case RouteKey.Projection(label) => (2, label.value)
   }
 

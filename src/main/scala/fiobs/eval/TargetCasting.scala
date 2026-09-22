@@ -167,6 +167,21 @@ private[eval] object TargetCasting {
       ) if sourceLabel == targetLabel && sourceFieldType.isSubtypeOf(targetFieldType) =>
         Some(RuntimeTerm.Record(sourceLabel, RuntimeTerm.Cast(field, targetFieldType), targetFieldType))
 
+      // R = μ α. A    S = μ β. B    ∅ ⊢ R <: S
+      // ───────────────────────────────────────────────── Cast-Rec
+      // ⟨fold r⟩ᴿ ⟶[S] ⟨fold (r : B[β ↦ S])⟩ˢ
+      //
+      // The payload cast stays suspended. Its source type is A[α ↦ R];
+      // the recursive subtyping unfolding lemma justifies the cast.
+      case (
+          RuntimeTerm.Fold(sourceType, body),
+          targetRecursive @ Type.Recursive(targetBody)
+      ) if sourceType.isSubtypeOf(targetRecursive) =>
+        Some(RuntimeTerm.Fold(
+          targetRecursive,
+          RuntimeTerm.Cast(body, targetBody.substituteType(0, targetRecursive))
+        ))
+
       // Rigid(B)    r₁ ⟶[B] r′
       // ─────────────────────── Cast-MergeL
       // r₁ ,, r₂ ⟶[B] r′

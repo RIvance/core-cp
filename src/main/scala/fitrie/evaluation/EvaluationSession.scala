@@ -52,6 +52,7 @@ enum EvaluationRequest {
   case Application(argument: EvaluationNodeId)
   case TypeApplication(pathInterface: ObservationPathInterface)
   case Projection(label: FieldLabel)
+  case Unfold
 }
 
 enum EvaluationStep {
@@ -164,7 +165,7 @@ private[evaluation] object RuntimeInspection {
     val node = registry.nodes(id.value)
     val responses = node.responseComputations.toVector.map(response(_, registry)).sortBy(responseSortKey)
     val routes = node.routeContinuations.toVector.map { case (routeKey, continuation) =>
-      EvaluationRoute(routeKey, requiredId(continuation, registry))
+      EvaluationRoute(routeKey, requiredId(continuation.body, registry))
     }.sortBy(route => routeSortKey(route.routeKey))
     val terminations = node.terminationPayloads.entries.toVector.map { case (primitiveType, payload) =>
       EvaluationTermination(primitiveType, payload)
@@ -209,10 +210,11 @@ private[evaluation] object RuntimeInspection {
     case typeApplication: RuntimeTypeApplicationRequest =>
       EvaluationRequest.TypeApplication(typeApplication.pathInterface)
     case projection: RuntimeProjectionRequest => EvaluationRequest.Projection(projection.label)
+    case RuntimeUnfoldRequest => EvaluationRequest.Unfold
   }
 
   private def children(node: RuntimeTrie): List[RuntimeTrie] = {
-    node.routeContinuations.values.toList ::: node.responseComputations.toList.flatMap {
+    node.routeContinuations.values.toList.map(_.body) ::: node.responseComputations.toList.flatMap {
       case _: RuntimeLocalVariable | _: RuntimeGlobal => Nil
       case reference: RuntimeStructuralReference => List(reference.target())
       case indexing: RuntimeIndex =>
@@ -255,12 +257,14 @@ private[evaluation] object RuntimeInspection {
   private def routeSortKey(routeKey: RouteKey): (Int, String) = routeKey match {
     case RouteKey.Application => 0 -> ""
     case RouteKey.TypeApplication => 1 -> ""
+    case RouteKey.Unfold => 3 -> ""
     case RouteKey.Projection(label) => 2 -> label.value
   }
 
   private def requestSortKey(request: EvaluationRequest): (Int, String) = request match {
     case EvaluationRequest.Application(argument) => 0 -> argument.value.toString
     case EvaluationRequest.TypeApplication(pathInterface) => 1 -> pathInterface.toString
+    case EvaluationRequest.Unfold => 3 -> ""
     case EvaluationRequest.Projection(label) => 2 -> label.value
   }
 

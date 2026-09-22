@@ -27,6 +27,8 @@ private[core] object CpTypeRendering {
           s"${renderType(leftType, Precedence.Intersection)} & " +
             renderType(rightType, Precedence.Intersection + 1)
         )
+      case TypeSyntax.Recursive(typeParameter, bodyType) =>
+        Precedence.Binding -> s"μ $typeParameter. ${renderType(bodyType, Precedence.Minimum)}"
       case TypeSyntax.Record(label, fieldType) =>
         Precedence.Atomic -> s"{$label : ${renderType(fieldType, Precedence.Minimum)}}"
       case TypeSyntax.Trait(requiredInterface, providedInterface) =>

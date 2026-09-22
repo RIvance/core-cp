@@ -1,6 +1,7 @@
 package cp.fitrie.elaboration
 
 import cp.fiobs.{Type, TypeContext}
+import cp.fiobs.typing.{ConversionDirection, RecursiveConversionId, SubtypeDerivation, SubtypeRule, Subtyping}
 import cp.fitrie.*
 import cp.naming.FieldLabel
 import cp.util.Result
@@ -10,6 +11,7 @@ enum CoercionError {
   case Merge(error: FiTrieMergeError)
 }
 
+/** Compiles finite subtyping evidence, including its lexical recursive conversion references. */
 private[fitrie] object Coercion {
   def coerce(
     trie: FiTrie,
@@ -17,279 +19,221 @@ private[fitrie] object Coercion {
     targetType: Type,
     context: TypeContext
   ): Result[FiTrie, CoercionError] = {
-    if (!sourceType.isSubtypeOf(targetType, context)) {
-      Result.Err(CoercionError.NotSubtype(sourceType, targetType))
-    } else if (targetType == Type.Top) {
-      // ───────────────────────────────── Coe-Top
-      // Δ ⊢ t ↦ᴬ<:⊤ { t ▷ ∅ ; · ; · }
-      Result.Ok(suspendedFilter(trie, RootKeyExpression.concrete(RootKeySet.empty)))
-    } else if (sourceType == Type.Bottom) {
-      /*
-       * Δ ⊢ A ⇛ₖ 𝒦
-       * ───────────────────────────────── Coe-Bot
-       * Δ ⊢ t ↦⊥<:ᴬ {t ▷ 𝒦 ; · ; ·}
-       */
-      Result.Ok(suspendedFilter(trie, RootKeyCompilation.compile(targetType)))
-    } else if (sourceType == targetType) {
-      sourceType match {
-        /*
-         * Δ ⊢ a ⇛ₖ 𝒦
-         * ───────────────────────────────── Coe-Atomic
-         * Δ ⊢ t ↦ᵃ<:ᵃ {t ▷ 𝒦 ; · ; ·}
-         */
-        case Type.Primitive(_) | Type.Variable(_) =>
-          Result.Ok(suspendedFilter(trie, RootKeyCompilation.compile(sourceType)))
-
-        // A ≠ a    A ≠ ⊤    A ≠ ⊥
-        // ──────────────────────── Coe-Refl-Structured
-        // Δ ⊢ t ↦ᴬ<:ᴬ t
-        case _ => Result.Ok(trie)
-      }
-    } else {
-      coerceNontrivial(trie, sourceType, targetType, context)
+    Subtyping(context).derivation(sourceType, targetType) match {
+      case Some(derivation) => compile(trie, derivation, ConversionScope.empty)
+      case None => Result.Err(CoercionError.NotSubtype(sourceType, targetType))
     }
   }
 
-  private def coerceNontrivial(
+  private def compile(
     trie: FiTrie,
-    sourceType: Type,
-    targetType: Type,
-    context: TypeContext
-  ): Result[FiTrie, CoercionError] = sourceType match {
-    case intersection @ Type.Intersection(firstType, secondType) =>
-      coerceIntersectionSource(
-        trie,
-        intersection,
-        firstType,
-        secondType,
-        targetType,
-        context
-      )
-    case Type.Arrow(sourceParameter, sourceResult) => targetType match {
-      case Type.Arrow(targetParameter, targetResult) =>
-        coerceArrow(
-          trie,
-          sourceParameter,
-          sourceResult,
-          targetParameter,
-          targetResult,
-          context
-        )
-      case _ => coerceTargetSplit(trie, sourceType, targetType, context)
-    }
-    case Type.ForAll(sourceBound, sourceBody) => targetType match {
-      case Type.ForAll(targetBound, targetBody) =>
-        coerceUniversal(trie, sourceBound, sourceBody, targetBound, targetBody, context)
-      case _ => coerceTargetSplit(trie, sourceType, targetType, context)
-    }
-    case Type.Record(sourceLabel, sourceFieldType) => targetType match {
-      case Type.Record(targetLabel, targetFieldType) if sourceLabel == targetLabel =>
-        coerceRecord(trie, sourceLabel, sourceFieldType, targetFieldType, context)
-      case _ => coerceTargetSplit(trie, sourceType, targetType, context)
-    }
-    case _ => coerceTargetSplit(trie, sourceType, targetType, context)
-  }
+    derivation: SubtypeDerivation,
+    scope: ConversionScope
+  ): Result[FiTrie, CoercionError] = derivation.rule match {
+    case SubtypeRule.Identity => derivation.targetType match {
+      // Δ ⊢ A ⇛ₖ 𝒦    A ∈ {p, α, ⊤, ⊥}
+      // ───────────────────────────────── Coe-Refl-Atomic
+      // Δ ⊢ t ↦ᴬ<:ᴬ {t ▷ 𝒦 ; · ; ·}
+      case Type.Primitive(_) | Type.Variable(_) | Type.Top | Type.Bottom =>
+        Result.Ok(suspendedFilter(trie, RootKeyCompilation.compile(derivation.targetType)))
 
-  private def coerceArrow(
-    trie: FiTrie,
-    sourceParameter: Type,
-    sourceResult: Type,
-    targetParameter: Type,
-    targetResult: Type,
-    context: TypeContext
-  ): Result[FiTrie, CoercionError] = {
+      // A ∉ {p, α, ⊤, ⊥}
+      // ───────────────── Coe-Refl-Structured
+      // Δ ⊢ t ↦ᴬ<:ᴬ t
+      case _ => Result.Ok(trie)
+    }
+
+    // ───────────────────────────────── Coe-Top
+    // Δ ⊢ t ↦ᴬ<:⊤ {t ▷ ∅ ; · ; ·}
+    case SubtypeRule.Top => Result.Ok(suspendedFilter(trie, RootKeyExpression.concrete(RootKeySet.empty)))
+
+    // Δ ⊢ A ⇛ₖ 𝒦
+    // ───────────────────────────────── Coe-Bot
+    // Δ ⊢ t ↦⊥<:ᴬ {t ▷ 𝒦 ; · ; ·}
+    case SubtypeRule.Bottom => Result.Ok(suspendedFilter(trie, RootKeyCompilation.compile(derivation.targetType)))
+
     /*
      * x ∉ fv(t)    Δ ⊢ {x ; · ; ·} ↦ᶜ<:ᴬ u₋
      * Δ ⊢ {t ◁ ⟨app[u₋]⟩ ; · ; ·} ↦ᴮ<:ᴰ u₊
      * ───────────────────────────────────────────── Coe-Arr
      * Δ ⊢ t ↦ᴬ⇾ᴮ<:ᶜ⇾ᴰ {t ▷ ∅ ; appₓ ↦ u₊ ; ·}
      */
-    val argument = FiTrie.response(ResponseComputation.LocalVariable(TermVariableIndex(0)))
-    coerce(argument, targetParameter, sourceParameter, context).flatMap { coercedArgument =>
-      val shiftedReceiver = trie.shiftTermVariables(1)
-      val application = suspendedIndex(
-        shiftedReceiver,
-        RequestSet.one(Request.Application(coercedArgument))
-      )
-      coerce(application, sourceResult, targetResult, context).map { coercedResult =>
-        FiTrie.node(
-          responseComputations = suspendedEmptyFilter(trie),
-          routeContinuations = Map(RouteKey.Application -> coercedResult)
-        )
-      }
-    }
-  }
+    case SubtypeRule.Arrow(parameter, result) =>
+      val innerScope = scope.withTermBinders(1)
+      for {
+        argument <- compile(localVariable(0), parameter, innerScope)
+        applied = suspendedIndex(trie.shiftTermVariables(1), Request.Application(argument))
+        coercedResult <- compile(applied, result, innerScope)
+      } yield guardedRoute(trie, RouteKey.Application, coercedResult)
 
-  private def coerceUniversal(
-    trie: FiTrie,
-    sourceBound: Type,
-    sourceBody: Type,
-    targetBound: Type,
-    targetBody: Type,
-    context: TypeContext
-  ): Result[FiTrie, CoercionError] = {
     /*
      * Δ ⊢ C <: A
      * Δ, α ∗ C ⊢ {t ◁ ⟨tapp[α]⟩ ; · ; ·} ↦ᴮ<:ᴰ u
      * ─────────────────────────────────────────────────── Coe-All-Paths
      * Δ ⊢ t ↦∀(α∗A).B<:∀(α∗C).D {t ▷ ∅ ; tappα ↦ u ; ·}
      */
-    if (!targetBound.isSubtypeOf(sourceBound, context)) {
-      Result.Err(CoercionError.NotSubtype(
-        Type.ForAll(sourceBound, sourceBody),
-        Type.ForAll(targetBound, targetBody)
-      ))
-    } else {
-      val application = suspendedIndex(
+    case SubtypeRule.Universal(_, body) =>
+      val applied = suspendedIndex(
         trie.shiftPathVariables(1),
-        RequestSet.one(Request.TypeApplication(
-          ObservationPathInterface.variable(PathVariableIndex(0))
-        ))
+        Request.TypeApplication(ObservationPathInterface.variable(PathVariableIndex(0)))
       )
-      coerce(application, sourceBody, targetBody, context.extend(targetBound)).map { coercedBody =>
-        FiTrie.node(
-          responseComputations = suspendedEmptyFilter(trie),
-          routeContinuations = Map(RouteKey.TypeApplication -> coercedBody)
-        )
-      }
-    }
-  }
+      compile(applied, body, scope.withTypeBinder).map(guardedRoute(trie, RouteKey.TypeApplication, _))
 
-  private def coerceRecord(
-    trie: FiTrie,
-    label: String,
-    sourceFieldType: Type,
-    targetFieldType: Type,
-    context: TypeContext
-  ): Result[FiTrie, CoercionError] = {
     /*
-     * Δ ⊢ { t ◁ ⟨projℓ⟩ ; · ; · } ↦ᴬ<:ᴮ u
+     * Δ ⊢ {t ◁ ⟨projℓ⟩ ; · ; ·} ↦ᴬ<:ᴮ u
      * ───────────────────────────────────────── Coe-Rcd
-     * Δ ⊢ t ↦{ℓ: A}<:{ℓ: B} { t ▷ ∅ ; projℓ ↦ u ; · }
+     * Δ ⊢ t ↦{ℓ:A}<:{ℓ:B} {t ▷ ∅ ; projℓ ↦ u ; ·}
      */
-    val fieldLabel = FieldLabel(label)
-    val projection = suspendedIndex(trie, RequestSet.one(Request.Projection(fieldLabel)))
-    coerce(projection, sourceFieldType, targetFieldType, context).map { coercedField =>
-      FiTrie.node(
-        responseComputations = suspendedEmptyFilter(trie),
-        routeContinuations = Map(RouteKey.Projection(fieldLabel) -> coercedField)
+    case SubtypeRule.Record(field) =>
+      val label = derivation.targetType match {
+        case Type.Record(name, _) => FieldLabel(name)
+        case _ => throw new IllegalStateException("record subtyping evidence has a non-record target")
+      }
+      compile(suspendedIndex(trie, Request.Projection(label)), field, scope)
+        .map(guardedRoute(trie, RouteKey.Projection(label), _))
+
+    // Δ ⊢ t ↦ A✓ | B tₐ    Δ ⊢ tₐ ↦ᴬ<:ᴰ u
+    // ─────────────────────────────────────── Coe-AndL
+    // Δ ⊢ t ↦ᴬ∧ᴮ<:ᴰ u
+    case SubtypeRule.SelectLeft(selected) => compile(
+      IntersectionSelection.selectFirstComponent(trie, selected.sourceType),
+      selected,
+      scope
+    )
+
+    // Δ ⊢ t ↦ A | B✓ tᵦ    Δ ⊢ tᵦ ↦ᴮ<:ᴰ u
+    // ─────────────────────────────────────── Coe-AndR
+    // Δ ⊢ t ↦ᴬ∧ᴮ<:ᴰ u
+    case SubtypeRule.SelectRight(selected) => compile(
+      IntersectionSelection.selectSecondComponent(trie, selected.sourceType),
+      selected,
+      scope
+    )
+
+    // D ⤇ B ‖ C    Δ ⊢ t ↦ᴬ<:ᴮ u₁    Δ ⊢ t ↦ᴬ<:ᶜ u₂    u₁ ⊕ u₂ = u
+    // ─────────────────────────────────────────────────────────────── Coe-Split
+    // Δ ⊢ t ↦ᴬ<:ᴰ u
+    case SubtypeRule.Split(first, second) =>
+      for {
+        left <- compile(trie, first, scope)
+        right <- compile(trie, second, scope)
+        merged <- FiTrie.merge(left, right).mapError(CoercionError.Merge(_))
+      } yield merged
+
+    case SubtypeRule.Recursive(identity, forwardBody, reverseBody) =>
+      val definition = ConversionDefinition(identity, forwardBody, reverseBody, scope.typeDepth)
+      converter(definition, ConversionDirection.Forward, scope.withDefinition(definition))
+        .map(suspendedIndex(_, Request.Application(trie)))
+
+    // C(ι, d) = c
+    // ──────────────────────────────────── Coe-Rec-Reference
+    // C ; Δ ⊢ t ↦ᴿ<:ˢ {c ◁ ⟨app[t]⟩ ; · ; ·}
+    case SubtypeRule.RecursiveReference(identity, direction) =>
+      scope.bound(identity, direction) match {
+        case Some(index) => Result.Ok(suspendedIndex(localVariable(index), Request.Application(trie)))
+        case None =>
+          // The other orientation may first be needed in a contravariant position.
+          // Its fixed point closes over the already-bound forward converter. Once
+          // both are bound, every reference is an application, so compilation is finite.
+          converter(scope.definition(identity), direction, scope).map(suspendedIndex(_, Request.Application(trie)))
+      }
+  }
+
+  private def converter(
+    definition: ConversionDefinition,
+    direction: ConversionDirection,
+    scope: ConversionScope
+  ): Result[FiTrie, CoercionError] = {
+    /*
+     * R = μα.A    S = μα.B    U(R) = A[α ↦ R]    U(S) = B[α ↦ S]
+     * C, (ι,d) ↦ c ; Δ ; x:R ⊢ {x ◁ ⟨unfold⟩ ; · ; ·} ↦ᵁ⁽ᴿ⁾<:ᵁ⁽ˢ⁾ u
+     * f = {· ; appₓ ↦ {x ▷ ∅ ; unfold ↦ u ; ·} ; ·}
+     * tie(c, ⟨app⟩, f) = f′
+     * ─────────────────────────────────────────────────────────────────────── Coe-Rec
+     * C ; Δ ⊢ t ↦ᴿ<:ˢ {f′ ◁ ⟨app[t]⟩ ; · ; ·}
+     *
+     * S-Label references the conversion function, not its current receiver.
+     * Reusing a receiver would repeatedly convert the first node of a stream.
+     */
+    val body = definition.body(direction).shiftTypeVariables(scope.typeDepth - definition.typeDepth)
+    val innerScope = scope.withTermBinders(2).withBound(definition.identity, direction, 1)
+    val argument = localVariable(0)
+    compile(suspendedIndex(argument, Request.Unfold), body, innerScope).map { converted =>
+      val function = FiTrie.route(RouteKey.Application, guardedRoute(argument, RouteKey.Unfold, converted))
+      function.tieFixedPoint(
+        TermVariableIndex(0),
+        RootKeyExpression.concrete(RootKeySet.one(RouteKey.Application.rootKey))
       )
     }
   }
 
-  private def coerceIntersectionSource(
-    trie: FiTrie,
-    intersection: Type.Intersection,
-    firstType: Type,
-    secondType: Type,
-    targetType: Type,
-    context: TypeContext
-  ): Result[FiTrie, CoercionError] = {
-    val firstRootKeys = RootKeyCompilation.compile(firstType)
-    val secondRootKeys = RootKeyCompilation.compile(secondType)
-    val rootKeysAreDisjoint = areDisjoint(firstRootKeys, secondRootKeys)
-    val firstIsSubtype = firstType.isSubtypeOf(targetType, context)
-    val secondIsSubtype = secondType.isSubtypeOf(targetType, context)
-
-    if (rootKeysAreDisjoint && firstIsSubtype) {
-      coerceSelectedFirstComponent(trie, firstType, secondType, targetType, context)
-    } else if (rootKeysAreDisjoint && secondIsSubtype) {
-      coerceSelectedSecondComponent(trie, firstType, secondType, targetType, context)
-    } else {
-      targetType.split match {
-        case Some(_) => coerceTargetSplit(trie, intersection, targetType, context)
-        case None if firstIsSubtype =>
-          coerceSelectedFirstComponent(trie, firstType, secondType, targetType, context)
-        case None if secondIsSubtype =>
-          coerceSelectedSecondComponent(trie, firstType, secondType, targetType, context)
-        case None => Result.Err(CoercionError.NotSubtype(intersection, targetType))
-      }
-    }
+  private def localVariable(index: Int): FiTrie = {
+    FiTrie.response(ResponseComputation.LocalVariable(TermVariableIndex(index)))
   }
 
-  private def coerceSelectedFirstComponent(
-    trie: FiTrie,
-    firstType: Type,
-    secondType: Type,
-    targetType: Type,
-    context: TypeContext
-  ): Result[FiTrie, CoercionError] = {
-    /*
-     * Δ ⊢ t ↦ A✓ | B tₐ    Δ ⊢ tₐ ↦ᴬ<:ᴰ u
-     * ─────────────────────────────────────── Coe-AndL
-     * Δ ⊢ t ↦ᴬ&ᴮ<:ᴰ u
-     */
-    coerce(
-      IntersectionSelection.selectFirstComponent(trie, firstType),
-      firstType,
-      targetType,
-      context
+  private def guardedRoute(receiver: FiTrie, routeKey: RouteKey, continuation: FiTrie): FiTrie = {
+    FiTrie.node(
+      responseComputations = Set(ResponseComputation.Filter(receiver, RootKeyExpression.concrete(RootKeySet.empty))),
+      routeContinuations = Map(routeKey -> continuation)
     )
-  }
-
-  private def coerceSelectedSecondComponent(
-    trie: FiTrie,
-    firstType: Type,
-    secondType: Type,
-    targetType: Type,
-    context: TypeContext
-  ): Result[FiTrie, CoercionError] = {
-    /*
-     * Δ ⊢ t ↦ A | B✓ tᵦ    Δ ⊢ tᵦ ↦ᴮ<:ᴰ u
-     * ─────────────────────────────────────── Coe-AndR
-     * Δ ⊢ t ↦ᴬ&ᴮ<:ᴰ u
-     */
-    coerce(
-      IntersectionSelection.selectSecondComponent(trie, secondType),
-      secondType,
-      targetType,
-      context
-    )
-  }
-
-  private def coerceTargetSplit(
-    trie: FiTrie,
-    sourceType: Type,
-    targetType: Type,
-    context: TypeContext
-  ): Result[FiTrie, CoercionError] = targetType.split match {
-    /*
-     * D ⤇ B ‖ C
-     * Δ ⊢ t ↦ᴬ<:ᴮ u₁    Δ ⊢ t ↦ᴬ<:ᶜ u₂
-     * u₁ ⊕ u₂ = u
-     * ───────────────────────────────────── Coe-Split
-     * Δ ⊢ t ↦ᴬ<:ᴰ u
-     */
-    case Some(targetSplit) =>
-      for {
-        first <- coerce(trie, sourceType, targetSplit.first, context)
-        second <- coerce(trie, sourceType, targetSplit.second, context)
-        merged <- FiTrie.merge(first, second).mapError(CoercionError.Merge(_))
-      } yield merged
-    case None => Result.Err(CoercionError.NotSubtype(sourceType, targetType))
   }
 
   private def suspendedFilter(trie: FiTrie, selectedRootKeys: RootKeyExpression): FiTrie = {
     FiTrie.response(ResponseComputation.Filter(trie, selectedRootKeys))
   }
 
-  private def areDisjoint(
-    firstRootKeys: RootKeyExpression,
-    secondRootKeys: RootKeyExpression
-  ): Boolean = (firstRootKeys.normalize, secondRootKeys.normalize) match {
-    case (Some(firstConcreteKeys), Some(secondConcreteKeys)) =>
-      firstConcreteKeys.isDisjointFrom(secondConcreteKeys)
-    case _ => false
+  private def suspendedIndex(trie: FiTrie, request: Request): FiTrie = {
+    FiTrie.response(ResponseComputation.Index(trie, RequestSet.one(request)))
   }
 
-  private def suspendedEmptyFilter(trie: FiTrie): Set[ResponseComputation] = {
-    Set(ResponseComputation.Filter(
-      trie,
-      RootKeyExpression.concrete(RootKeySet.empty)
+  private final case class ConversionDefinition(
+    identity: RecursiveConversionId,
+    forwardBody: SubtypeDerivation,
+    reverseBody: Option[SubtypeDerivation],
+    typeDepth: Int
+  ) {
+    def body(direction: ConversionDirection): SubtypeDerivation = direction match {
+      case ConversionDirection.Forward => forwardBody
+      case ConversionDirection.Reverse => reverseBody.getOrElse {
+        throw new IllegalStateException("recursive subtyping evidence references an absent reverse conversion")
+      }
+    }
+  }
+
+  private final case class BoundConversion(identity: RecursiveConversionId, direction: ConversionDirection, index: Int)
+
+  private final case class ConversionScope(
+    definitions: List[ConversionDefinition],
+    bindings: List[BoundConversion],
+    typeDepth: Int
+  ) {
+    def withTermBinders(count: Int): ConversionScope = copy(bindings = bindings.map(binding =>
+      binding.copy(index = binding.index + count)
     ))
+
+    def withTypeBinder: ConversionScope = copy(typeDepth = typeDepth + 1)
+
+    def withDefinition(definition: ConversionDefinition): ConversionScope = copy(
+      definitions = definition :: definitions,
+      bindings = bindings.filterNot(_.identity == definition.identity)
+    )
+
+    def withBound(identity: RecursiveConversionId, direction: ConversionDirection, index: Int): ConversionScope = {
+      copy(bindings = BoundConversion(identity, direction, index) :: bindings)
+    }
+
+    def bound(identity: RecursiveConversionId, direction: ConversionDirection): Option[Int] = {
+      bindings.find(binding => binding.identity == identity && binding.direction == direction).map(_.index)
+    }
+
+    def definition(identity: RecursiveConversionId): ConversionDefinition = {
+      definitions.find(_.identity == identity).getOrElse {
+        throw new IllegalStateException("recursive subtyping evidence contains an unbound conversion reference")
+      }
+    }
   }
 
-  private def suspendedIndex(trie: FiTrie, requests: RequestSet): FiTrie = {
-    FiTrie.response(ResponseComputation.Index(trie, requests))
+  private object ConversionScope {
+    val empty: ConversionScope = ConversionScope(Nil, Nil, 0)
   }
 }

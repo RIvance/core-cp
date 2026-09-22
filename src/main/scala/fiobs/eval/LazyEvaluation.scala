@@ -7,7 +7,7 @@ import cp.util.Result
 
 import scala.annotation.tailrec
 
-/** Deterministic evaluation under the lazy Fiobs reduction rules. */
+/** The small-step Fiobs rules, evaluated directly by capture-avoiding substitution. */
 object LazyEvaluation {
   @tailrec
   def evaluate(
@@ -41,6 +41,8 @@ object LazyEvaluation {
     value: Value,
     globalEnvironment: GlobalEnvironment
   ): Result[FullyEvaluatedValue, EvaluationError] = value match {
+    case Value.Fold(recursiveType, body) =>
+      evaluateFully(body, globalEnvironment).map(FullyEvaluatedValue.Fold(recursiveType, _))
     case Value.Primitive(primitive) => Result.Ok(FullyEvaluatedValue.Primitive(primitive))
     case Value.Top => Result.Ok(FullyEvaluatedValue.Top)
     case Value.Lambda(parameterType, body, resultType) =>
@@ -87,6 +89,15 @@ object LazyEvaluation {
     // ───────────────────────────────────────── Step-Fix
     // fix(x : A). r ↪ r[x ↦ fix(x : A). r]
     case fixpoint @ RuntimeTerm.Fix(_, body) => Result.Ok(body.substituteTerm(0, fixpoint))
+
+    // ───────────────────────────── Step-Unfold-Fold
+    // unfold ⟨fold r⟩ᴿ ↪ r
+    case RuntimeTerm.Unfold(RuntimeTerm.Fold(_, body)) => Result.Ok(body)
+
+    // r ↪ r′
+    // ───────────────────── Step-Unfold
+    // unfold r ↪ unfold r′
+    case RuntimeTerm.Unfold(inner) => step(inner, globalEnvironment).map(RuntimeTerm.Unfold(_))
 
     // r₁ ↪ r₁′
     // ───────────────── Step-MergeL

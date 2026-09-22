@@ -18,6 +18,7 @@ enum FiTrieElaborationError {
   case UnboundDecoratedGlobal(identifier: Identifier)
   case ExpectedArrow(term: RuntimeTerm, actualType: Type)
   case ExpectedUniversal(term: RuntimeTerm, actualType: Type)
+  case ExpectedRecursive(term: RuntimeTerm, actualType: Type)
   case ExpectedRecord(term: RuntimeTerm, label: FieldLabel, actualType: Type)
   case UnexpectedType(term: RuntimeTerm, actualType: Type, expectedType: Type)
   case NoPrimitiveSignature(operator: BinaryOperator, leftType: Type, rightType: Type)
@@ -86,6 +87,39 @@ object Elaborator {
     // ───────────────────────── Elab-Top
     // Δ ; Γ ⊢ top ⇒ ⊤ ⇝ { · ; · ; · }
     case RuntimeTerm.Top => Result.Ok(TypedFiTrie(FiTrie.empty, Type.Top))
+
+    // R = μ α. A    Δ ; Γ ⊢ r ⇒ A[α ↦ R] ⇝ t
+    // ───────────────────────────────────────────── Elab-Fold
+    // Δ ; Γ ⊢ ⟨fold r⟩ᴿ ⇒ R ⇝ { · ; unfold ↦ t ; · }
+    case RuntimeTerm.Fold(recursiveType, body) =>
+      recursiveType.unfolded match {
+        case Some(bodyType) => translate(body, context).flatMap { translatedBody =>
+          requireType(translatedBody, bodyType, body).map { checkedBody =>
+            TypedFiTrie(FiTrie.route(RouteKey.Unfold, checkedBody.trie), recursiveType)
+          }
+        }
+        case None => Result.Err(FiTrieElaborationError.ExpectedRecursive(term, recursiveType))
+      }
+
+    // R = μ α. A    B = A[α ↦ R]    Δ ; Γ ⊢ r ⇒ R ⇝ t    Δ ⊢ B ⇛ₖ 𝒦
+    // ───────────────────────────────────────────────────────────── Elab-Unfold
+    // Δ ; Γ ⊢ unfold r ⇒ B ⇝ { { t ◁ ⟨unfold⟩ ; · ; · } ▷ 𝒦 ; · ; · }
+    case RuntimeTerm.Unfold(inner) =>
+      translate(inner, context).flatMap { translatedInner =>
+        translatedInner.inferredType.unfolded match {
+          case Some(bodyType) => Result.Ok(TypedFiTrie(
+            suspendedFilter(
+              FiTrie.response(ResponseComputation.Index(
+                translatedInner.trie,
+                RequestSet.one(Request.Unfold)
+              )),
+              RootKeyCompilation.compile(bodyType)
+            ),
+            bodyType
+          ))
+          case None => Result.Err(FiTrieElaborationError.ExpectedRecursive(inner, translatedInner.inferredType))
+        }
+      }
 
     /*
      * Δ ; Γ, x : A ⊢ e ⇐ B ⇝ t    Δ ⊢ B ⇛ₖ 𝒦

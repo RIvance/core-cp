@@ -18,10 +18,10 @@ export function registerCpLanguage(monaco: typeof Monaco): void {
   });
   monaco.languages.setMonarchTokensProvider("cp", {
     keywords: [
-      "and", "def", "else", "extends", "false", "forall", "from", "if", "impl",
-      "import", "implements", "in", "inherits", "let", "module", "new", "open",
+      "and", "def", "else", "extends", "false", "fold", "forall", "from", "if", "impl",
+      "import", "implements", "in", "inherits", "interface", "let", "module", "mu", "new", "open",
       "override", "rec", "self", "super", "then", "top", "trait", "true", "type",
-      "where", "with"
+      "unfold", "where", "with"
     ],
     typeKeywords: ["Int", "Decimal", "Bool", "String", "Unit", "Top", "Bottom"],
     operators: [
@@ -41,7 +41,7 @@ export function registerCpLanguage(monaco: typeof Monaco): void {
         [/--.*$/, "comment"],
         [/[{}()[\]]/, "@brackets"],
         [/[;,.]/, "delimiter"],
-        [/[λΛ∀⊤⊥]/, "keyword"],
+        [/[λΛ∀μ⊤⊥]/, "keyword"],
         [/[=!<>?:&|+\-*\/%@]+/, { cases: { "@operators": "operator", "@default": "" } }]
       ],
       comment: [
