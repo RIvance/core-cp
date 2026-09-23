@@ -1,0 +1,10 @@
+{
+  "name": "ide-package-consumer-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "lint": "eslint .",
+    "test": "playwright test"
+  }
+}

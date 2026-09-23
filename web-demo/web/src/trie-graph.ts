@@ -1,8 +1,10 @@
+import type { PlaygroundTheme } from "@language-playground/ide/themes";
 import cytoscape, {
   type Core,
   type ElementDefinition,
   type EventObject,
-  type Layouts
+  type Layouts,
+  type StylesheetJson
 } from "cytoscape";
 import type { TrieDiff } from "./trie-diff";
 import type {
@@ -33,170 +35,17 @@ export class TrieGraph {
   private snapshot: TrieSnapshot | null = null;
   private activeLayout: Layouts | null = null;
 
-  constructor(container: HTMLElement, onSelection: (selection: GraphSelection) => void) {
+  constructor(
+    container: HTMLElement,
+    onSelection: (selection: GraphSelection) => void,
+    theme: PlaygroundTheme
+  ) {
     this.graph = cytoscape({
       container,
       minZoom: 0.18,
       maxZoom: 2.6,
       wheelSensitivity: 0.16,
-      style: [
-        {
-          selector: "node",
-          style: {
-            label: "data(label)",
-            color: "#dce9ee",
-            "font-family": "IBM Plex Mono, JetBrains Mono, monospace",
-            "font-size": 11,
-            "text-wrap": "wrap",
-            "text-max-width": "150px",
-            "text-valign": "center",
-            "text-halign": "center",
-            "background-color": "#16303a",
-            "border-color": "#426875",
-            "border-width": 1.5,
-            width: 82,
-            height: 48
-          }
-        },
-        {
-          selector: "node.trie-node",
-          style: {
-            shape: "round-rectangle",
-            "background-color": "#123843",
-            "border-color": "#51a7b5",
-            "border-width": 2,
-            width: 92,
-            height: 58,
-            "font-weight": 600
-          }
-        },
-        {
-          selector: "node.root-node",
-          style: {
-            shape: "hexagon",
-            "background-color": "#59471f",
-            "border-color": "#e7be66",
-            "border-width": 3,
-            color: "#fff0c4",
-            width: 68,
-            height: 54,
-            "font-size": 10,
-            "font-weight": 700,
-            "underlay-color": "#e7be66",
-            "underlay-opacity": 0.08,
-            "underlay-padding": 9
-          }
-        },
-        {
-          selector: "node.response-node",
-          style: {
-            shape: "diamond",
-            "background-color": "#293840",
-            "border-color": "#718b94",
-            width: 104,
-            height: 68,
-            "font-size": 9
-          }
-        },
-        {
-          selector: "node.response-index",
-          style: {
-            "background-color": "#4b3527",
-            "border-color": "#d69a62"
-          }
-        },
-        {
-          selector: "node.response-filter",
-          style: {
-            "background-color": "#2f365b",
-            "border-color": "#858dd8"
-          }
-        },
-        {
-          selector: "node.response-primitive",
-          style: {
-            "background-color": "#542d42",
-            "border-color": "#d2789a"
-          }
-        },
-        {
-          selector: "node.termination-node",
-          style: {
-            shape: "ellipse",
-            "background-color": "#293f31",
-            "border-color": "#80b888",
-            color: "#d9f0da",
-            width: 86,
-            height: 46
-          }
-        },
-        {
-          selector: "node.changed",
-          style: {
-            "border-color": "#ffd166",
-            "border-width": 4,
-            "overlay-color": "#ffd166",
-            "overlay-opacity": 0.12,
-            "overlay-padding": 12
-          }
-        },
-        {
-          selector: "edge",
-          style: {
-            width: 1.5,
-            "line-color": "#49636c",
-            "target-arrow-color": "#49636c",
-            "target-arrow-shape": "triangle",
-            "curve-style": "bezier",
-            label: "data(label)",
-            color: "#8da9b1",
-            "font-size": 9,
-            "font-family": "IBM Plex Mono, JetBrains Mono, monospace",
-            "text-background-color": "#0b171c",
-            "text-background-opacity": 0.88,
-            "text-background-padding": "2px",
-            "text-rotation": "autorotate"
-          }
-        },
-        {
-          selector: "edge.route-edge",
-          style: { "line-color": "#4a91a4", "target-arrow-color": "#4a91a4", width: 2.2 }
-        },
-        {
-          selector: "edge.root-edge",
-          style: {
-            "line-color": "#a9853f",
-            "target-arrow-color": "#a9853f",
-            width: 2.5
-          }
-        },
-        {
-          selector: "edge.response-edge",
-          style: { "line-color": "#9c704c", "target-arrow-color": "#9c704c" }
-        },
-        {
-          selector: "edge.reference-edge",
-          style: {
-            "line-style": "dashed",
-            "line-color": "#c5798d",
-            "target-arrow-color": "#c5798d",
-            "curve-style": "unbundled-bezier",
-            "control-point-distances": 70
-          }
-        },
-        {
-          selector: "edge.changed",
-          style: {
-            "line-color": "#ffd166",
-            "target-arrow-color": "#ffd166",
-            width: 3.5
-          }
-        },
-        {
-          selector: ":selected",
-          style: { "overlay-color": "#8ed6df", "overlay-opacity": 0.15, "overlay-padding": 8 }
-        }
-      ]
+      style: graphStyles(theme)
     });
 
     this.graph.on("tap", "node", (event: EventObject) => {
@@ -217,6 +66,17 @@ export class TrieGraph {
     this.graph.add(buildGraphElements(snapshot, diff));
     this.restoreTransitionStartPositions(positions);
     this.layout(animate, positions.size === 0, positions.size === 0);
+  }
+
+  setTheme(theme: PlaygroundTheme): void {
+    this.graph.style(graphStyles(theme));
+  }
+
+  resize(): void { this.graph.resize(); }
+
+  dispose(): void {
+    this.finishActiveLayout();
+    this.graph.destroy();
   }
 
   fit(): void {
@@ -767,4 +627,165 @@ function responseTargets(response: TrieResponse): readonly TrieTarget[] {
 
 function classes(...values: string[]): string {
   return values.filter(Boolean).join(" ");
+}
+
+function graphStyles({ colors, syntax }: PlaygroundTheme): StylesheetJson {
+  return [
+    {
+      selector: "node",
+      style: {
+        label: "data(label)",
+        color: colors.text,
+        "font-family": "IBM Plex Mono, JetBrains Mono, monospace",
+        "font-size": 11,
+        "text-wrap": "wrap",
+        "text-max-width": "150px",
+        "text-valign": "center",
+        "text-halign": "center",
+        "background-color": colors.raised,
+        "border-color": colors.border,
+        "border-width": 1.5,
+        width: 82,
+        height: 48
+      }
+    },
+    {
+      selector: "node.trie-node",
+      style: {
+        shape: "round-rectangle",
+        "background-color": colors.raised,
+        "border-color": colors.accent,
+        "border-width": 2,
+        width: 92,
+        height: 58,
+        "font-weight": 600
+      }
+    },
+    {
+      selector: "node.root-node",
+      style: {
+        shape: "hexagon",
+        "background-color": colors.accent,
+        "border-color": colors.accent,
+        "border-width": 3,
+        color: colors.onAccent,
+        width: 68,
+        height: 54,
+        "font-size": 10,
+        "font-weight": 700,
+        "underlay-color": colors.accent,
+        "underlay-opacity": 0.08,
+        "underlay-padding": 9
+      }
+    },
+    {
+      selector: "node.response-node",
+      style: {
+        shape: "diamond",
+        "background-color": colors.raised,
+        "border-color": colors.muted,
+        width: 104,
+        height: 68,
+        "font-size": 9
+      }
+    },
+    {
+      selector: "node.response-index",
+      style: {
+        "background-color": colors.raised,
+        "border-color": syntax.function
+      }
+    },
+    {
+      selector: "node.response-filter",
+      style: {
+        "background-color": colors.raised,
+        "border-color": syntax.type
+      }
+    },
+    {
+      selector: "node.response-primitive",
+      style: {
+        "background-color": colors.raised,
+        "border-color": syntax.keyword
+      }
+    },
+    {
+      selector: "node.termination-node",
+      style: {
+        shape: "ellipse",
+        "background-color": colors.raised,
+        "border-color": colors.success,
+        color: colors.text,
+        width: 86,
+        height: 46
+      }
+    },
+    {
+      selector: "node.changed",
+      style: {
+        "border-color": colors.warning,
+        "border-width": 4,
+        "overlay-color": colors.warning,
+        "overlay-opacity": 0.12,
+        "overlay-padding": 12
+      }
+    },
+    {
+      selector: "edge",
+      style: {
+        width: 1.5,
+        "line-color": colors.muted,
+        "target-arrow-color": colors.muted,
+        "target-arrow-shape": "triangle",
+        "curve-style": "bezier",
+        label: "data(label)",
+        color: colors.muted,
+        "font-size": 9,
+        "font-family": "IBM Plex Mono, JetBrains Mono, monospace",
+        "text-background-color": colors.surface,
+        "text-background-opacity": 0.88,
+        "text-background-padding": "2px",
+        "text-rotation": "autorotate"
+      }
+    },
+    {
+      selector: "edge.route-edge",
+      style: { "line-color": colors.accent, "target-arrow-color": colors.accent, width: 2.2 }
+    },
+    {
+      selector: "edge.root-edge",
+      style: {
+        "line-color": colors.accent,
+        "target-arrow-color": colors.accent,
+        width: 2.5
+      }
+    },
+    {
+      selector: "edge.response-edge",
+      style: { "line-color": syntax.function, "target-arrow-color": syntax.function }
+    },
+    {
+      selector: "edge.reference-edge",
+      style: {
+        "line-style": "dashed",
+        "line-color": syntax.keyword,
+        "target-arrow-color": syntax.keyword,
+        "curve-style": "unbundled-bezier",
+        "control-point-distances": 70
+      }
+    },
+    {
+      selector: "edge.changed",
+      style: {
+        "line-color": colors.warning,
+        "target-arrow-color": colors.warning,
+        width: 3.5
+      }
+    },
+    {
+      selector: ":selected",
+      style: { "overlay-color": colors.accent, "overlay-opacity": 0.15, "overlay-padding": 8 }
+    }
+  ];
 }

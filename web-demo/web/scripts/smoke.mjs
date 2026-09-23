@@ -1,14 +1,25 @@
 import assert from "node:assert/strict";
-import { CpTrieWorkbench } from "../scalajs/main.js";
+import { CpTrieWorkbench } from "../scalajs/fast/main.js";
 import { examples } from "../src/examples.ts";
 
 const workbench = new CpTrieWorkbench();
 for (const example of examples) {
-  const result = workbench.compile(example.source, "Main.cp");
-  assert.equal(result.ok, true, `${example.name}: ${describeFailure(result)}`);
+  const result = workbench.compile(
+    example.files.map((file) => ({ fileName: file.path, source: file.text })), example.entryPath
+  );
+  assert.equal(result.ok, true, `${example.title}: ${describeFailure(result)}`);
+  assert.equal(workbench.evaluate().ok, true, example.title);
+  assert.equal(workbench.start().ok, true, example.title);
 }
 
-const compilation = workbench.compile("def main: Int = 20 + 22\n", "Main.cp");
+function compile(source, fileName) {
+  const compiled = workbench.compile([{ fileName, source }], fileName);
+  if (!compiled.ok) return compiled;
+  const fiobsResult = workbench.evaluate();
+  return { ...compiled, ...workbench.start(), fiobsResult };
+}
+
+const compilation = compile("def main: Int = 20 + 22\n", "Main.cp");
 
 assert.equal(compilation.ok, true, describeFailure(compilation));
 assert.equal(compilation.entryPoint, "Main::main");
@@ -31,10 +42,9 @@ assert.deepEqual(root.terminations, [{ key: "int", value: "42" }]);
 const restarted = workbench.restart();
 assert.equal(restarted.ok, true, describeFailure(restarted));
 assert.equal(restarted.step, 1);
-assert.deepEqual(restarted.fiobsResult, { ok: true, value: "42" });
 assert.equal(isOnlyGlobalMain(restarted.snapshot), false);
 
-const coercion = workbench.compile(`// expected: 42
+const coercion = compile(`// expected: 42
 
 def replaceBoolean(value: Int) = false ,, value;
 
@@ -61,18 +71,18 @@ assert.ok(coercionRoot, "the intersection coercion has no final root node");
 assert.deepEqual(coercionRoot.responses, []);
 assert.deepEqual(coercionRoot.terminations, [{ key: "int", value: "42" }]);
 
-const directEvaluationFailure = workbench.compile("def main: Int = 1 / 0\n", "Main.cp");
+const directEvaluationFailure = compile("def main: Int = 1 / 0\n", "Main.cp");
 assert.equal(directEvaluationFailure.ok, true, describeFailure(directEvaluationFailure));
 assert.deepEqual(directEvaluationFailure.fiobsResult, {
   ok: false,
   message: "Operator '/' attempted division by zero."
 });
 
-const recordMerge = workbench.compile("def main = { l = 1 } ,, { l = true }\n", "Main.cp");
+const recordMerge = compile("def main = { l = 1 } ,, { l = true }\n", "Main.cp");
 assert.equal(recordMerge.ok, true, describeFailure(recordMerge));
 assert.deepEqual(recordMerge.fiobsResult, { ok: true, value: "{ l = 1 ,, true }" });
 
-const recursive = workbench.compile(`
+const recursive = compile(`
 type Wide = μ S. { value: Int; extra: Bool; next: S };
 type Narrow = μ S. { value: Int; next: S };
 def naturals(n: Int): Wide = fold[Wide] { value = n; extra = true; next = naturals(n + 1) };
@@ -91,51 +101,49 @@ const recursiveRoot = state.snapshot.nodes.find((node) => node.id === state.snap
 assert.ok(recursiveRoot, "recursive evaluation has no final root node");
 assert.deepEqual(recursiveRoot.terminations, [{ key: "int", value: "42" }]);
 
-const foldedValue = workbench.compile("def main = fold[μ X. Int] 42;", "Main.cp");
+const foldedValue = compile("def main = fold[μ X. Int] 42;", "Main.cp");
 assert.equal(foldedValue.ok, true, describeFailure(foldedValue));
 assert.equal(foldedValue.fiobsResult.ok, true);
 assert.match(foldedValue.fiobsResult.value, /^fold\[μ.*Int\] \(42\)$/);
 
-const invalidFold = workbench.compile("def main = fold[Int] 42;", "Main.cp");
+const invalidFold = compile("def main = fold[Int] 42;", "Main.cp");
 assert.equal(invalidFold.ok, false);
 assert.equal(invalidFold.error.phase, "compile");
 assert.match(invalidFold.error.message, /Expected a recursive type/);
 
-const recursiveInterface = workbench.compile(`
+const recursiveInterface = compile(`
 interface Box { value: Int; }
 def main = (unfold[Box] (fold[Box] { value = 42 })).value;
 `, "Main.cp");
 assert.equal(recursiveInterface.ok, true, describeFailure(recursiveInterface));
 assert.deepEqual(recursiveInterface.fiobsResult, { ok: true, value: "42" });
 
-const invalid = workbench.compile("def main: Int =", "Main.cp");
+const invalid = compile("def main: Int =", "Main.cp");
 assert.equal(invalid.ok, false);
-assert.equal(invalid.fiobsResult, null);
 assert.equal(invalid.error.phase, "parse");
 assert.equal(typeof invalid.error.line, "number");
 
-const invalidEscape = workbench.compile('def main = "\\q";', "Main.cp");
+const invalidEscape = compile('def main = "\\q";', "Main.cp");
 assert.equal(invalidEscape.ok, false);
 assert.equal(invalidEscape.error.phase, "parse");
 assert.match(invalidEscape.error.message, /invalid string escape/);
 assert.equal(invalidEscape.error.column, 13);
 
-const signatureMisuse = workbench.compile(`type Signature<Sort> = { field: Sort };
+const signatureMisuse = compile(`type Signature<Sort> = { field: Sort };
 def main = Signature[Int];`, "Main.cp");
 assert.equal(signatureMisuse.ok, false);
 assert.equal(signatureMisuse.error.phase, "compile");
 assert.match(signatureMisuse.error.message, /Expected a term.*names a type: Main::Signature/);
 
-const signatureHomonym = workbench.compile(`type Signature<Sort> = { field: Sort };
+const signatureHomonym = compile(`type Signature<Sort> = { field: Sort };
 def Signature[T](value: T) = value;
 def main = Signature[Int](42);`, "Main.cp");
 assert.equal(signatureHomonym.ok, true, describeFailure(signatureHomonym));
 assert.deepEqual(signatureHomonym.fiobsResult, { ok: true, value: "42" });
 
 const invalidMergeSource = "def main = 1 ,, 2\n";
-const invalidMerge = workbench.compile(invalidMergeSource, "Main.cp");
+const invalidMerge = compile(invalidMergeSource, "Main.cp");
 assert.equal(invalidMerge.ok, false);
-assert.equal(invalidMerge.fiobsResult, null);
 assert.equal(invalidMerge.error.phase, "compile");
 assert.match(invalidMerge.error.message, /Cannot merge Int with Int: the types are not disjoint\./);
 assert.doesNotMatch(invalidMerge.error.message, /TypesAreNotDisjoint|Primitive\(/);

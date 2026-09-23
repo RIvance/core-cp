@@ -80,11 +80,15 @@ export interface TrieTermination {
   readonly value: string;
 }
 
-export interface WorkbenchSuccess {
+export interface CompilationSuccess {
   readonly ok: true;
   readonly entryPoint: string;
   readonly elaboratedMainTerm: string;
-  readonly fiobsResult: FiobsEvaluationResult;
+}
+
+export interface WorkbenchSuccess {
+  readonly ok: true;
+  readonly entryPoint: string;
   readonly step: number;
   readonly complete: boolean;
   readonly snapshot: TrieSnapshot;
@@ -96,10 +100,10 @@ export type FiobsEvaluationResult =
 
 export interface WorkbenchFailure {
   readonly ok: false;
-  readonly fiobsResult: FiobsEvaluationResult | null;
   readonly error: {
     readonly phase: string;
     readonly message: string;
+    readonly fileName: string | null;
     readonly line: number | null;
     readonly column: number | null;
     readonly endLine: number | null;
@@ -108,3 +112,9 @@ export interface WorkbenchFailure {
 }
 
 export type WorkbenchResult = WorkbenchSuccess | WorkbenchFailure;
+export type CompilationResult = CompilationSuccess | WorkbenchFailure;
+
+export interface BrowserSourceFile {
+  readonly fileName: string;
+  readonly source: string;
+}

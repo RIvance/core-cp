@@ -49,9 +49,18 @@ build/
 
 tmp/
 docs/
+!playground-core/docs/
 AGENTS.md
 
 ### Web demo ###
 web-demo/web/node_modules/
 web-demo/web/dist/
 web-demo/web/scalajs/
+web-demo/web/.playground-core/
+web-demo/web/test-results/
+web-demo/web/playwright-report/
+
+### Language server ###
+language-server/node_modules/
+language-server/dist/
+language-server/scalajs/

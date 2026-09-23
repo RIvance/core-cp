@@ -44,7 +44,7 @@ To run the browser playground locally, install **Java 21**, **sbt**, and
 
 ```sh
 cd web-demo/web
-npm install
+npm run setup
 npm run dev
 ```
 

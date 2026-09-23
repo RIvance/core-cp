@@ -1,19 +1,72 @@
-package cp.visualizer
+package cp.tooling
 
 import cp.fiobs.{ApplicableForm, CompilationError as FiobsCompilationError}
 import cp.fiobs.elaboration.{ElaborationError as FiobsElaborationError}
 import cp.fiobs.typing.TypeError
 import cp.fitrie.{FiTrieCompilationError, FiTrieMergeError, RouteKey}
 import cp.fitrie.elaboration.{CoercionError, FiTrieElaborationError}
-import cp.language.CpCompilationError
-import cp.language.compilation.{CpFiTrieCompilationError, ModuleSourceError}
+import cp.language.{Cp, CpCompilationError}
+import cp.language.compilation.{CpFiTrieCompilationError, CpSourceFile, IdentifiedSourceModule, ModuleSourceError}
 import cp.language.elaboration.*
 import cp.language.parser.ParsingError
 import cp.primitive.{PrimitiveType, PrimitiveValue}
 import cp.source.SourceSpan
 
-/** Human-readable rendering of structured compiler errors at the browser boundary. */
-private[visualizer] object CompilerDiagnostics {
+import scala.scalajs.js
+
+/** Human-readable compiler diagnostics, independent of LSP transport and client presentation. */
+object CompilerDiagnostics {
+  def compilationIssue(error: CpCompilationError, sources: List[CpSourceFile]): js.Object = {
+    val source = sourceFile(error, sources)
+    val range = error match {
+      case CpCompilationError.Parsing(_, ParsingError.Syntax(_, line, column)) =>
+        Some((line, column, line, column))
+      case _ =>
+        for {
+          file <- source
+          span <- sourceSpan(error)
+          resolved <- span.resolveIn(file.contents)
+        } yield (resolved.start.line, resolved.start.column, resolved.end.line, resolved.end.column)
+    }
+    js.Dynamic.literal(
+      phase = (error match {
+        case CpCompilationError.Parsing(_, _) => "parse"
+        case _ => "compile"
+      }),
+      message = render(error),
+      fileName = source.fold[js.Any](null)(_.path.value),
+      line = range.fold[js.Any](null)(_._1),
+      column = range.fold[js.Any](null)(_._2),
+      endLine = range.fold[js.Any](null)(_._3),
+      endColumn = range.fold[js.Any](null)(_._4)
+    )
+  }
+
+  /** Preserve the compiler's source identity; diagnostics never infer a file from the message text. */
+  def sourceFile(error: CpCompilationError, sources: List[CpSourceFile]): Option[CpSourceFile] = {
+    val path = error match {
+      case CpCompilationError.Parsing(sourcePath, _) => sourcePath
+      case CpCompilationError.Source(ModuleSourceError.InvalidSourceFileExtension(sourcePath)) => Some(sourcePath)
+      case CpCompilationError.Source(ModuleSourceError.InvalidModuleFileName(sourcePath)) => Some(sourcePath)
+      case _ => None
+    }
+    val namespace = error match {
+      case CpCompilationError.Elaboration(owner, _) => Some(owner)
+      case CpCompilationError.Fiobs(identifier, _) => Some(identifier.scope)
+      case CpCompilationError.UnknownImportedModule(owner, _) => Some(owner)
+      case _ => None
+    }
+    path.flatMap(sourcePath => sources.find(_.path == sourcePath)).orElse {
+      namespace.flatMap { owner =>
+        sources.find { source =>
+          Cp.parse(source.contents).toOption
+            .flatMap(module => IdentifiedSourceModule.create(source, module).toOption)
+            .exists(_.namespace == owner)
+        }
+      }
+    }
+  }
+
   def sourceSpan(error: CpCompilationError): Option[SourceSpan] = error match {
     case CpCompilationError.Elaboration(_, elaborationError) => elaborationError.location
     case _ => None

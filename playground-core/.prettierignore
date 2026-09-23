@@ -1,0 +1,8 @@
+node_modules
+dist
+generated
+target
+scalajs-api
+package-lock.json
+test-results
+playwright-report
