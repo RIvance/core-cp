@@ -4,11 +4,10 @@ import cp.fitrie.*
 import cp.fitrie.evaluation.*
 import cp.language.compilation.{CpFiTrieCompiler, CpSourceFile, SourcePath}
 import cp.language.evaluation.CpEvaluator
-import cp.language.parser.ParsingError
-import cp.language.{Cp, CpCompilationError}
+import cp.language.{CompiledCpModule, CompiledCpProgram, Cp, CpCompilationError}
 import cp.primitive.{BinaryOperator, PrimitiveType, PrimitiveValue}
-import cp.source.ResolvedSourceSpan
 import cp.util.Result
+import cp.tooling.{CompilerDiagnostics, CompilerSourceFile}
 
 import scala.scalajs.js
 import scala.scalajs.js.annotation.{JSExport, JSExportTopLevel}
@@ -17,80 +16,78 @@ import scala.scalajs.js.annotation.{JSExport, JSExportTopLevel}
 @JSExportTopLevel("CpTrieWorkbench")
 final class BrowserApi {
   private val maximumCoalescedReductions = 100
+  private var compilation: Option[(CompiledCpProgram, CompiledCpModule)] = None
   private var initialSession: Option[EvaluationSession] = None
   private var initialStepNumber: Int = 0
   private var initialIsComplete: Boolean = false
   private var currentSession: Option[EvaluationSession] = None
   private var stepNumber: Int = 0
-  private var elaboratedMainTerm: Option[String] = None
-  private var fiobsEvaluation: Option[FiobsEvaluationPresentation] = None
 
+  /** Compile an immutable workspace without running either evaluator. */
   @JSExport
-  def compile(source: String, fileName: String): js.Object = {
-    val sourceFile = CpSourceFile(SourcePath(fileName), source)
-    Cp.compileModules(List(sourceFile)) match {
-      case Result.Err(error) =>
-        clearSession()
-        compilationFailure(error, source)
-      case Result.Ok(compiledCpProgram) =>
-        val targetNamespace = compiledCpProgram.modules.keys.head
-        val evaluatedFiobs = CpEvaluator.evaluateFully(compiledCpProgram, targetNamespace) match {
-          case Result.Ok(value) => FiobsEvaluationPresentation.success(value)
-          case Result.Err(error) => FiobsEvaluationPresentation.failure(error)
-        }
-        CpFiTrieCompiler.compile(compiledCpProgram, targetNamespace) match {
-          case Result.Err(error) =>
-            clearSession()
-            failure(
-              "FiTrie",
-              CompilerDiagnostics.render(error),
-              directFiobsResult = Some(evaluatedFiobs)
-            )
-          case Result.Ok(compiledFiTrieProgram) =>
-            val mainTerm = compiledCpProgram.modules(targetNamespace)
-              .definitions(compiledFiTrieProgram.entryPoint)
-              .sourceTerm
-            Evaluation.start(
-              compiledFiTrieProgram.entry,
-              compiledFiTrieProgram.globalEnvironment
-            ) match {
-              case Result.Err(error) =>
-                clearSession()
-                failure(
-                  "evaluation",
-                  error.toString,
-                  directFiobsResult = Some(evaluatedFiobs)
+  def compile(files: js.Array[CompilerSourceFile], entryFile: String): js.Object = {
+    clearSession()
+    compilation = None
+    val sourceFiles = files.toList.map(file => CpSourceFile(SourcePath(file.fileName), file.source))
+    Cp.compileModules(sourceFiles) match {
+      case Result.Err(error) => compilationFailure(error, sourceFiles)
+      case Result.Ok(program) =>
+        program.modules.values.find(_.sourceFile.path.value == entryFile) match {
+          case None => failure("entry", "The selected entry file is not a CP module.")
+          case Some(module) =>
+            val entryPoint = module.namespace.identifier("main")
+            module.definitions.get(entryPoint) match {
+              case None => failure("entry", s"Define an ordinary `main` value in ${module.namespace.render}.")
+              case Some(definition) =>
+                compilation = Some((program, module))
+                js.Dynamic.literal(
+                  ok = true,
+                  entryPoint = entryPoint.render,
+                  elaboratedMainTerm = definition.sourceTerm.render(72)
                 )
-              case Result.Ok(session) =>
-                advanceToVisibleState(
-                  session,
-                  FiTriePresentation.project(session.snapshot),
-                  maximumCoalescedReductions
-                ) match {
-                  case Result.Err(error) =>
-                    clearSession()
-                    failure(
-                      "evaluation",
-                      error.toString,
-                      directFiobsResult = Some(evaluatedFiobs)
-                    )
-                  case Result.Ok(VisibleAdvance(visibleSession, complete, reductions)) =>
-                    initialSession = Some(visibleSession)
-                    initialStepNumber = reductions
-                    initialIsComplete = complete
-                    currentSession = Some(visibleSession)
-                    stepNumber = reductions
-                    elaboratedMainTerm = Some(mainTerm.render(72))
-                    fiobsEvaluation = Some(evaluatedFiobs)
-                    success(
-                      visibleSession,
-                      compiledFiTrieProgram.entryPoint.render,
-                      complete
-                    )
-                }
             }
         }
     }
+  }
+
+  /** Direct evaluation can be interrupted by terminating its owning worker. */
+  @JSExport
+  def evaluate(): js.Object = compilation match {
+    case None => serializeFiobsEvaluation(FiobsEvaluationPresentation.Failure("Compile a CP workspace first."))
+    case Some((program, module)) =>
+      val result = CpEvaluator.evaluateFully(program, module.namespace) match {
+        case Result.Ok(value) => FiobsEvaluationPresentation.success(value)
+        case Result.Err(error) => FiobsEvaluationPresentation.failure(error)
+      }
+      serializeFiobsEvaluation(result)
+  }
+
+  /** A separate worker owns the interactive session, independently of direct evaluation. */
+  @JSExport
+  def start(): js.Object = compilation match {
+    case None => failure("state", "Compile a CP workspace before starting evaluation.")
+    case Some((program, module)) =>
+      clearSession()
+      CpFiTrieCompiler.compile(program, module.namespace) match {
+        case Result.Err(error) => failure("FiTrie", CompilerDiagnostics.render(error))
+        case Result.Ok(compiled) =>
+          Evaluation.start(compiled.entry, compiled.globalEnvironment).flatMap { session =>
+            advanceToVisibleState(
+              session,
+              FiTriePresentation.project(session.snapshot),
+              maximumCoalescedReductions
+            )
+          } match {
+            case Result.Err(error) => failure("evaluation", error.toString)
+            case Result.Ok(VisibleAdvance(session, complete, reductions)) =>
+              initialSession = Some(session)
+              initialStepNumber = reductions
+              initialIsComplete = complete
+              currentSession = Some(session)
+              stepNumber = reductions
+              success(session, complete)
+          }
+      }
   }
 
   @JSExport
@@ -101,15 +98,11 @@ final class BrowserApi {
         FiTriePresentation.project(session.snapshot),
         maximumCoalescedReductions
       ) match {
-      case Result.Err(error) => failure(
-          "evaluation",
-          error.toString,
-          directFiobsResult = fiobsEvaluation
-        )
+      case Result.Err(error) => failure("evaluation", error.toString)
       case Result.Ok(VisibleAdvance(next, complete, reductions)) =>
         currentSession = Some(next)
         stepNumber += reductions
-        success(next, entryPoint = "", isComplete = complete)
+        success(next, isComplete = complete)
     }
   }
 
@@ -119,7 +112,7 @@ final class BrowserApi {
     case Some(session) =>
       currentSession = Some(session)
       stepNumber = initialStepNumber
-      success(session, entryPoint = "", isComplete = initialIsComplete)
+      success(session, isComplete = initialIsComplete)
   }
 
   private def clearSession(): Unit = {
@@ -128,8 +121,6 @@ final class BrowserApi {
     initialIsComplete = false
     currentSession = None
     stepNumber = 0
-    elaboratedMainTerm = None
-    fiobsEvaluation = None
   }
 
   private def advanceToVisibleState(
@@ -163,15 +154,10 @@ final class BrowserApi {
 
   private def success(
     session: EvaluationSession,
-    entryPoint: String,
     isComplete: Boolean
   ): js.Object = js.Dynamic.literal(
     ok = true,
-    entryPoint = entryPoint,
-    elaboratedMainTerm = elaboratedMainTerm.getOrElse(""),
-    fiobsResult = serializeFiobsEvaluation(fiobsEvaluation.getOrElse {
-      throw new IllegalStateException("successful workbench state has no Fiobs evaluation")
-    }),
+    entryPoint = compilation.get._2.namespace.identifier("main").render,
     step = stepNumber,
     complete = isComplete,
     snapshot = serialize(FiTriePresentation.project(session.snapshot))
@@ -188,47 +174,22 @@ final class BrowserApi {
     )
   }
 
-  private def compilationFailure(error: CpCompilationError, source: String): js.Object = error match {
-    case CpCompilationError.Parsing(_, ParsingError.Syntax(message, line, column)) =>
-      failure("parse", message, Some(BrowserSourceRange.point(line, column)))
-    case other =>
-      val sourceRange = CompilerDiagnostics.sourceSpan(other)
-        .flatMap(_.resolveIn(source))
-        .map(BrowserSourceRange.from)
-      failure("compile", CompilerDiagnostics.render(other), sourceRange)
+  private def compilationFailure(error: CpCompilationError, sources: List[CpSourceFile]): js.Object = {
+    js.Dynamic.literal(ok = false, error = CompilerDiagnostics.compilationIssue(error, sources))
   }
 
-  private def failure(
-    phase: String,
-    message: String,
-    sourceRange: Option[BrowserSourceRange] = None,
-    directFiobsResult: Option[FiobsEvaluationPresentation] = None
-  ): js.Object = {
-    val (line, column, endLine, endColumn) = sourceRange match {
-      case Some(range) => (
-          range.startLine.asInstanceOf[js.Any],
-          range.startColumn.asInstanceOf[js.Any],
-          range.endLine.asInstanceOf[js.Any],
-          range.endColumn.asInstanceOf[js.Any]
-        )
-      case None => (null, null, null, null)
-    }
-    js.Dynamic.literal(
-      ok = false,
-      fiobsResult = directFiobsResult match {
-        case Some(result) => serializeFiobsEvaluation(result)
-        case None => null
-      },
-      error = js.Dynamic.literal(
-        phase = phase,
-        message = message,
-        line = line,
-        column = column,
-        endLine = endLine,
-        endColumn = endColumn
-      )
+  private def failure(phase: String, message: String): js.Object = js.Dynamic.literal(
+    ok = false,
+    error = js.Dynamic.literal(
+      phase = phase,
+      message = message,
+      fileName = null,
+      line = null,
+      column = null,
+      endLine = null,
+      endColumn = null
     )
-  }
+  )
 
   private def serialize(snapshot: EvaluationSnapshot): js.Object = js.Dynamic.literal(
     root = snapshot.root.value,
@@ -414,23 +375,3 @@ private final case class VisibleAdvance(
   complete: Boolean,
   reductions: Int
 )
-
-private final case class BrowserSourceRange(
-  startLine: Int,
-  startColumn: Int,
-  endLine: Int,
-  endColumn: Int
-)
-
-private object BrowserSourceRange {
-  def point(line: Int, column: Int): BrowserSourceRange = {
-    BrowserSourceRange(line, column, line, column + 1)
-  }
-
-  def from(sourceSpan: ResolvedSourceSpan): BrowserSourceRange = BrowserSourceRange(
-    sourceSpan.start.line,
-    sourceSpan.start.column,
-    sourceSpan.end.line,
-    sourceSpan.end.column
-  )
-}

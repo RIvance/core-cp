@@ -3,127 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta
-      name="description"
-      content="Compile CP programs to FiTrie and inspect lazy small-step evaluation in the browser."
-    />
+    <meta name="description" content="Edit CP workspaces and explore lazy evaluation in an interactive FiTrie graph." />
     <title>CP · FiTrie Observatory</title>
-    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <header class="app-header">
-        <div class="brand-mark" aria-hidden="true">Φ</div>
-        <div class="brand-copy">
-          <h1>FiTrie Observatory</h1>
-          <p>CP <span>→</span> FiObS <span>→</span> observational trie</p>
-        </div>
-        <div class="header-note">lazy semantics · browser local</div>
-      </header>
-
-      <section class="workspace" aria-label="CP source and FiTrie visualization">
-        <section class="panel source-panel" aria-labelledby="source-heading">
-          <div class="panel-toolbar">
-            <div>
-              <span class="eyebrow">Source</span>
-              <h2 id="source-heading">Main.cp</h2>
-            </div>
-            <div class="toolbar-actions">
-              <label class="example-picker">
-                <span class="sr-only">Choose example</span>
-                <select id="example-select" aria-label="Choose a CP example"></select>
-              </label>
-              <button id="compile-button" class="button button-primary" type="button">
-                <span class="button-icon">⌘</span>
-                Compile
-              </button>
-            </div>
-          </div>
-          <div class="source-stage">
-            <div id="editor" class="editor" aria-label="CP source editor"></div>
-            <section
-              id="compiler-output"
-              class="output-pane compiler-output"
-              aria-labelledby="compiler-output-kind"
-              aria-live="polite"
-            >
-              <div class="output-pane-heading">
-                <span id="compiler-output-kind" class="eyebrow">Compiler output</span>
-                <span id="compiler-output-subject">main</span>
-              </div>
-              <pre id="compiler-output-content">Compile to inspect the elaborated Fᵢᵒᵇˢ term.</pre>
-            </section>
-            <section
-              id="evaluation-result"
-              class="output-pane evaluation-result"
-              aria-labelledby="evaluation-result-kind"
-              aria-live="polite"
-            >
-              <div class="output-pane-heading">
-                <span id="evaluation-result-kind" class="eyebrow">Result</span>
-                <span id="evaluation-result-subject">Fiobs evaluator</span>
-              </div>
-              <pre id="evaluation-result-content">Compile to evaluate main directly with Fiobs.</pre>
-            </section>
-          </div>
-          <div id="diagnostic" class="diagnostic" role="status" aria-live="polite">
-            <span class="diagnostic-dot"></span>
-            <span id="diagnostic-text">Ready to compile locally.</span>
-          </div>
-        </section>
-
-        <section class="panel trie-panel" aria-labelledby="trie-heading">
-          <div class="panel-toolbar">
-            <div>
-              <span class="eyebrow">Runtime graph</span>
-              <h2 id="trie-heading">main · step <span id="step-number">0</span></h2>
-            </div>
-            <div class="toolbar-actions">
-              <button id="restart-button" class="button button-quiet" type="button" disabled>
-                Restart
-              </button>
-              <button id="fit-button" class="icon-button" type="button" title="Fit graph to view">
-                ⛶
-              </button>
-              <button id="layout-button" class="icon-button" type="button" title="Recompute graph layout">
-                ⤨
-              </button>
-              <button id="step-button" class="button button-step" type="button" disabled>
-                Step
-                <span class="shortcut">F10</span>
-              </button>
-            </div>
-          </div>
-          <div class="graph-stage">
-            <div id="trie-graph" class="trie-graph" aria-label="Interactive FiTrie graph"></div>
-            <div id="graph-empty" class="graph-empty">
-              <div class="empty-glyph">{ · ; Φ ; Θ }</div>
-              <h3>No compiled trie yet</h3>
-              <p>Compile the CP module to materialize its <code>main</code> entry.</p>
-            </div>
-            <aside id="inspector" class="inspector" aria-live="polite">
-              <div class="inspector-heading">
-                <span class="eyebrow">Selection</span>
-                <button id="inspector-close" class="inspector-close" type="button" aria-label="Close inspector">×</button>
-              </div>
-              <h3 id="inspector-title">Trie node</h3>
-              <pre id="inspector-content"></pre>
-            </aside>
-            <div class="graph-legend" aria-label="Graph legend">
-              <span><i class="legend-node legend-root"></i> root</span>
-              <span><i class="legend-node legend-trie"></i> trie</span>
-              <span><i class="legend-node legend-filter"></i> filter</span>
-              <span><i class="legend-node legend-index"></i> index</span>
-              <span><i class="legend-node legend-primitive"></i> primitive</span>
-              <span><i class="legend-node legend-value"></i> value</span>
-            </div>
-          </div>
-          <div class="runtime-status">
-            <span id="runtime-message">Waiting for compilation</span>
-            <span id="runtime-counts">0 nodes · 0 responses</span>
-          </div>
-        </section>
-      </section>
+    <main class="observatory">
+      <section id="playground" aria-label="CP playground"></section>
+      <section id="trie-explorer" aria-label="FiTrie explorer"></section>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

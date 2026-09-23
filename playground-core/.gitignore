@@ -1,0 +1,38 @@
+# Dependencies and frontend bundles
+node_modules/
+dist/
+*.tgz
+
+# Generated language modules, including Scala.js JavaScript and source maps
+generated/
+
+# Optional Scala.js API build output; this project does not rely on a parent .gitignore
+target/
+.bsp/
+.bloop/
+.metals/
+.scala-build/
+**/project/project/
+**/project/.boot/
+**/project/.sbtboot/
+*.class
+*.tasty
+*.sjsir
+
+# TypeScript and frontend tooling caches
+*.tsbuildinfo
+.vite/
+.vite-temp/
+.cache/
+.eslintcache
+
+# Test results, coverage, traces, and screenshots
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Keep documentation visible when this project is nested in a checkout that ignores README files
+!README.md

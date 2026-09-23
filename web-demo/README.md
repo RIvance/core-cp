@@ -1,147 +1,140 @@
 # Core CP Web Demo
 
-A browser playground for [Core CP](../README.md). Write CP programs, see their
-results, and explore evaluation through an interactive graph. The app is called
-**FiTrie Observatory** in the interface.
+**FiTrie Observatory** is a CP playground with a workspace editor and an
+interactive view of FiTrie evaluation. Compilation and evaluation run locally
+in browser workers.
 
-- CP source editing with syntax highlighting and compiler diagnostics.
-- Built-in examples covering arithmetic, recursion, records, and lazy evaluation.
-- An elaborated Fᵢᵒᵇˢ term and its evaluated result alongside the source.
-- A FiTrie runtime graph with stepping, change highlighting, and node inspection.
-
-Compilation and evaluation run in the browser using the project's Scala.js
-build.
+The editor uses the Language Playground IDE package. It provides files and
+folders, tabs, source search, examples, themes, local history, project import
+and export, and share links. The trie explorer remains beside the editor.
 
 ## Run locally
 
-Install **Java 21**, **sbt**, and **Node.js 24 with npm**. From the repository
-root:
+Install Java 21, sbt, and Node.js 24 with npm. From the repository root:
 
 ```sh
 cd web-demo/web
-npm install
+npm run setup
 npm run dev
 ```
 
-The development command builds the Scala.js compiler and starts Vite. Open the
-local URL printed in the terminal.
+Setup builds the supplied IDE package in a separate generated directory and
+installs the application and language-server dependencies. It does not change
+the supplied IDE checkout. Development builds the Scala.js compiler and
+language server, then starts Vite.
 
-## Use the playground
+## Run a program
 
-Choose a built-in example or enter a complete CP program:
+Choose an example, or enter:
 
 ```cp
 def square(value: Int): Int = value * value
-
 def main: Int = square(6) + 6
 ```
 
-Select **Compile**. This program produces `42` in the result panel and loads
-its initial evaluation graph. The workspace has four parts:
+Select **Run** or press **Ctrl+Enter** / **Cmd+Enter**. **Output** shows `42`.
+**Inspector** contains the elaborated Fᵢᵒᵇˢ term, which can be copied or
+downloaded. **Problems** shows compiler and evaluation errors. Compiler errors
+also appear while editing, through the CP language server.
 
-| Area | What it shows |
+Each Run sends an immutable workspace snapshot to two separate workers:
+
+- The direct Fᵢᵒᵇˢ evaluator computes the displayed result, including record fields.
+- The FiTrie evaluator creates a session for interactive stepping.
+
+The **Stop** button and the execution time limit interrupt direct evaluation.
+They do not block editing. The time limit is available in **Workspace settings**.
+The trie can be explored while direct evaluation is still running.
+
+## Explore the trie
+
+| Control | Action |
 | --- | --- |
-| Source editor | The CP program being compiled. |
-| Compiler output | The elaborated Fᵢᵒᵇˢ term for `main`, or a compilation diagnostic. |
-| Result | The value computed by the direct Fᵢᵒᵇˢ evaluator, or an evaluation error. |
-| Runtime graph | The current FiTrie state, which advances when you select **Step**. |
+| **Step** or **F10** | Advance to the next visible state. |
+| **Restart** | Return to the first displayed state of this run. |
+| **Fit** | Fit the graph into its viewport. |
+| **Layout** | Arrange the nodes again. |
+| Click a node | Inspect its full notation. |
+| **Stop trie** | Interrupt a pending trie operation. Run again to create a new session. |
 
-The result is computed when you compile. You can then step through the graph
-at your own pace. Changed nodes and edges are highlighted after each step.
-When evaluation reaches normal form, no further reductions remain and the
-**Step** button is disabled.
+Changed nodes and edges are highlighted. Drag nodes to arrange them, drag the
+background to pan, and scroll to zoom. At normal form, **Step** is disabled.
 
-Selecting a node opens an inspector with its full notation. Drag nodes to
-rearrange them, drag the background to pan, and scroll to zoom. Use **Fit** to
-bring the graph into view or **Layout** to arrange it again.
+The counter counts reductions, so one click can increase it by more than one:
+reductions that produce the same displayed graph are grouped together. Each
+trie operation has a 30-second deadline; an expired operation terminates its
+worker and reports the failure.
 
-Editing the source or choosing another example clears the previous result and
-graph. Compile again to start a new evaluation.
+The explorer retains the snapshot from the last Run. Editing source does not
+change that session. Run again to compile the edited workspace. A new run
+replaces the previous trie session. Editor and graph colors follow the same
+theme selection.
 
-### Controls
+## Work with several modules
 
-| Action | Control | Shortcut |
-| --- | --- | --- |
-| Compile the editor contents | **Compile** | `Ctrl+Enter` / `Cmd+Enter` while editing |
-| Advance evaluation | **Step** | `F10` |
-| Return to the initial compiled graph | **Restart** | — |
-| Fit the graph in the viewport | Fit icon | — |
-| Recompute node positions | Layout icon | — |
-| Inspect a node | Click the node | — |
+The **Module imports** example contains two files:
 
-The step counter counts individual reductions. A click can advance it by more
-than one because reductions that leave the displayed graph unchanged are
-grouped together. **Restart** returns to the first displayed state of the
-compiled program.
+```cp
+// Application.cp
+module Examples::Application
+import Examples::Library::*
+def main: Int = twice(21)
+```
 
-### Supported programs
+```cp
+// lib/Library.cp
+module Examples::Library
+def twice(value: Int): Int = value + value
+```
 
-The editor represents one file named `Main.cp`. Programs must define `main`;
-an explicit `module` declaration can choose a different namespace. Imports of
-other files are currently unavailable in the playground. The Scala compiler
-API supports multi-module programs.
+The entry file is `Application.cp`. Editing or opening `Library.cp` does not
+change the entry. Choose a different entry file in **Workspace settings**.
+The compiler receives every `.cp` file, including closed tabs. Other workspace
+text files are not CP modules. Module names and imports follow ordinary CP
+rules; folders do not introduce namespaces.
 
-Compilation and direct evaluation run synchronously. A long-running or
-nonterminating program can make the page unresponsive.
+CP evaluates the entry module's `main` definition. Other entry names and
+nonempty standard input are reported as unsupported. The playground does not
+change CP's evaluation or typing rules.
 
-For syntax and more examples, see the [Core CP language tour](../README.md#language-tour).
+## Language service
 
-## Development
+The CP language server checks the complete synchronized workspace and publishes
+parse and type errors with source ranges. Errors without a source range appear
+in **Language service** messages; running also reports them in **Problems**.
+The compiler currently reports the first failing compilation error.
 
-Run the following commands from `web-demo/web`:
+The server advertises diagnostics and document synchronization. Completion,
+hover, rename, and symbol navigation are not implemented. It is a separate
+subproject with a stdio entry point as well as a worker entry point; neither
+depends on this demo or on the IDE package.
+
+## Development and verification
+
+Run these commands from `web-demo/web`:
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Build Scala.js and start the development server. |
-| `npm run scala:fast` | Rebuild the Scala.js code for development. |
-| `npm test` | Run graph, rendering, and snapshot comparison tests. |
-| `npm run test:integration` | Rebuild Scala.js and test the compiler and evaluator through the browser API. |
-| `npm run build` | Optimize Scala.js, check TypeScript, and build the static site. |
+| `npm run setup` | Build the supplied IDE package and install dependencies. |
+| `npm run dev` | Build compiler/server assets and start Vite. |
+| `npm run scala:fast` | Rebuild both Scala.js entry points. |
+| `npm test` | Build Scala.js and test graph rendering, snapshot comparison, and workspace execution. |
+| `npm run test:integration` | Build Scala.js and check compilation and both evaluators. |
+| `npm run build -- --base=./` | Build a static site with relative asset URLs. |
+| `npx playwright install chromium` | Install the browser used by the UI tests. |
+| `npm run test:browser` | Test the built site under a deployment subdirectory. |
 
-After changing Scala sources, run `npm run scala:fast` and reload the page.
-Vite handles updates to the TypeScript interface and styles during development.
+After changing Scala sources, rebuild with `npm run scala:fast` and reload the
+page. If using a system Chromium, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` when running
+the browser tests. This setting affects only the test runner.
 
-To run the JVM semantic and regression suites, use the repository root:
+## Deployment
 
-```sh
-sbt root/Test/testFull
-```
+`npm run build` writes the static site to `web-demo/web/dist`. Preview it with
+`npx vite preview`. A build using `--base=./` can be hosted under a repository
+subpath or at a domain root; workers use the same base as the page.
 
-The interface uses TypeScript, Monaco Editor, and Cytoscape.js. Scala.js exposes
-the shared CP compiler and evaluators to the browser; graph rendering and
-change highlighting belong to the interface. Vite serves and bundles the app.
-
-## Production build
-
-From `web-demo/web`:
-
-```sh
-npm run build
-npx vite preview
-```
-
-The build writes the static site to `web-demo/web/dist`. The preview command
-serves that output locally. To build with relative asset URLs for hosting under
-a repository subpath, use:
-
-```sh
-npm run build -- --base=./
-```
-
-### GitHub Pages
-
-The repository includes a **Web Demo CI and GitHub Pages** workflow. It runs
-the frontend and Scala.js integration tests and builds the site on pushes and
-pull requests. Successful builds on the default branch deploy to GitHub Pages.
-
-To enable deployment:
-
-1. In the repository's **Settings → Pages → Build and deployment**, choose
-   **GitHub Actions** as the source. See the
-   [GitHub Pages setup guide](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).
-2. Push to the default branch, or run **Web Demo CI and GitHub Pages** manually
-   from the **Actions** tab with the default branch selected.
-3. Open the site URL published by the deployment in the `github-pages` environment.
-
-The workflow uses the relative-URL build shown above. You can preview the same
-output locally with `npx vite preview` after that build.
+The **Web Demo CI and GitHub Pages** workflow tests the language server,
+Scala.js API, frontend, and production browser build. Successful builds on the
+default branch deploy through GitHub Pages when its source is set to
+**GitHub Actions**.
