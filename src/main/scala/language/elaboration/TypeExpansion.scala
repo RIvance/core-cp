@@ -56,6 +56,12 @@ final class TypeScope private (bindings: List[TypeBinding]) {
     }
   }
 
+  private[elaboration] def sourceNames: List[String] = bindings.flatMap(_.sourceName).distinct
+
+  private[elaboration] def displayNames: List[String] = bindings.zipWithIndex.map {
+    case (binding, index) => binding.sourceName.getOrElse(s"α$index")
+  }
+
   private[elaboration] def sortCompanions: Map[Int, Int] = {
     bindings.zipWithIndex.collect { case (TypeBinding.Sort(_), index) => index -> (index + 1) }.toMap
   }
@@ -71,7 +77,8 @@ object TypeScope {
 
 final case class TypeExpansionContext(
   moduleScope: ModuleScope,
-  signatures: Map[Identifier, SignatureDefinition]
+  signatures: Map[Identifier, SignatureDefinition],
+  private[elaboration] val inspection: Option[SourceInspection] = None
 ) {
   def register(identifier: Identifier, definition: SignatureDefinition): TypeExpansionContext = {
     copy(signatures = signatures.updated(identifier, definition))
@@ -126,6 +133,15 @@ object TypeExpansion {
     inputType: TypeSyntax,
     context: TypeExpansionContext,
     scope: TypeScope = TypeScope.empty
+  ): Result[Type, TypeExpansionError] = {
+    context.inspection.foreach(_.observeType(inputType, scope))
+    expandType(inputType, context, scope)
+  }
+
+  private def expandType(
+    inputType: TypeSyntax,
+    context: TypeExpansionContext,
+    scope: TypeScope
   ): Result[Type, TypeExpansionError] = inputType match {
     case TypeSyntax.Primitive(kind) => Result.Ok(Type.Primitive(kind))
     case TypeSyntax.Top => Result.Ok(Type.Top)

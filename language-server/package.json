@@ -4,28 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./browser": {
-      "types": "./dist/main/typescript/browser.d.ts",
-      "import": "./dist/main/typescript/browser.js"
-    }
-  },
-  "bin": {
-    "cp-language-server": "./dist/main/typescript/node.js"
+    "./browser": "./scalajs/main.js"
   },
   "scripts": {
-    "scala:build": "cd .. && sbt languageServer/fullLinkJS",
-    "build:typescript": "tsc",
-    "build": "npm run scala:build && npm run build:typescript",
-    "check": "tsc --noEmit",
-    "test": "npm run build && node --test tests/*.test.mjs",
-    "start": "node dist/main/typescript/node.js --stdio"
-  },
-  "dependencies": {
-    "vscode-languageserver": "^10.1.1",
-    "vscode-languageserver-textdocument": "^1.0.12"
-  },
-  "devDependencies": {
-    "@types/node": "^24.10.9",
-    "typescript": "^7.0.2"
+    "build": "cd .. && sbt \";languageServer/fullLinkJS;languageServerJVM/assembly\"",
+    "test": "cd .. && sbt \";languageServerJVM/test;languageServer/test\""
   }
 }

@@ -1,6 +1,8 @@
 package cp.language.elaboration
 
 import cp.language.core.*
+import cp.language.analysis.CompletionSite
+import cp.language.parser.SourceSyntax
 import cp.language.typing.Type
 import cp.naming.{Identifier, Namespace}
 import cp.util.{Graph, Result}
@@ -12,10 +14,48 @@ object CpElaborator {
     namespace: Namespace,
     importedHeaders: Map[Namespace, ElaboratedModuleHeader]
   ): Result[ElaboratedModule, CpElaborationError] = {
+    prepare(module, namespace, importedHeaders, None).mapError(_.error).flatMap(_.elaborateModule)
+  }
+
+  /** Analysis retains established facts from failed definitions and does not compile a runtime target. */
+  private[language] def analyze(
+    module: Module,
+    namespace: Namespace,
+    importedHeaders: Map[Namespace, ElaboratedModuleHeader],
+    syntax: SourceSyntax
+  ): ModuleSourceAnalysis = {
+    val inspection = new SourceInspection(syntax)
+    prepare(module, namespace, importedHeaders, Some(inspection)) match {
+      case Result.Err(failure) =>
+        val completions = failure.establishedContext.toList.flatMap { context =>
+          inspection.completions(context.moduleScope, context.moduleScope.importedTermSignatures, context.signatures)
+        }
+        ModuleSourceAnalysis(None, completions, Some(failure.error))
+      case Result.Ok(session) =>
+        val result = session.elaborateModule
+        ModuleSourceAnalysis(
+          Some(session.establishedHeader),
+          session.completions(inspection),
+          result match {
+            case Result.Err(error) => Some(error)
+            case Result.Ok(_) => None
+          }
+        )
+    }
+  }
+
+  private def prepare(
+    module: Module,
+    namespace: Namespace,
+    importedHeaders: Map[Namespace, ElaboratedModuleHeader],
+    inspection: Option[SourceInspection]
+  ): Result[DefinitionElaboration, PreparationFailure] = {
     for {
-      _ <- validateUniqueDefinitions(module)
-      scope <- ModuleScope.create(module, namespace, importedHeaders).mapError(CpElaborationError.NameResolution(_))
-      expansion <- elaborateTypes(module, namespace, TypeExpansionContext(scope, scope.importedTypeDefinitions))
+      _ <- validateUniqueDefinitions(module).mapError(PreparationFailure(_, None))
+      scope <- ModuleScope.create(module, namespace, importedHeaders)
+        .mapError(error => PreparationFailure(CpElaborationError.NameResolution(error), None))
+      initial = TypeExpansionContext(scope, scope.importedTypeDefinitions, inspection)
+      expansion <- elaborateTypes(module, namespace, initial).mapError(PreparationFailure(_, Some(initial)))
       definitions <- Result.traverse(module.termMembers) { member =>
         val annotation = member.declaredType match {
           case None => Result.Ok(None)
@@ -26,21 +66,8 @@ object CpElaborator {
           val identifier = namespace.identifier(member.definitionName)
           identifier -> new Definition(identifier, member, declaredType)
         }
-      }.map(_.toMap)
-      elaborated <- DefinitionElaboration(expansion, definitions).elaborateAll
-      annotated = definitions.collect {
-        case (identifier, definition) if definition.declaredType.nonEmpty => identifier
-      }
-      lowered <- RecursiveDefinitions.lower(elaborated, annotated.toSet)
-    } yield ElaboratedModule(
-      ElaboratedModuleHeader(
-        namespace,
-        expansion.signatures.filter(_._1.scope == namespace),
-        elaborated.view.mapValues(_.definitionType).toMap,
-        module.imports.map(_.targetNamespace).toSet
-      ),
-      lowered
-    )
+      }.map(_.toMap).mapError(PreparationFailure(_, Some(expansion)))
+    } yield new DefinitionElaboration(expansion, definitions, module.imports.map(_.targetNamespace).toSet)
   }
 
   private def validateUniqueDefinitions(module: Module): Result[Unit, CpElaborationError] = {
@@ -87,6 +114,18 @@ object CpElaborator {
   }
 }
 
+/** A failed annotation does not invalidate the namespace and signatures already established before it. */
+private final case class PreparationFailure(
+  error: CpElaborationError,
+  establishedContext: Option[TypeExpansionContext]
+)
+
+private[language] final case class ModuleSourceAnalysis(
+  header: Option[ElaboratedModuleHeader],
+  completions: List[CompletionSite],
+  error: Option[CpElaborationError]
+)
+
 /**
  * Owns one module's resolution session. The expression elaborator requests global types
  * through this explicit dependency; resolving a dependency continues the current traversal.
@@ -95,10 +134,38 @@ object CpElaborator {
  */
 private final class DefinitionElaboration(
   expansion: TypeExpansionContext,
-  definitions: Map[Identifier, Definition]
+  definitions: Map[Identifier, Definition],
+  dependencies: Set[Namespace]
 ) extends GlobalTypeResolver {
   private val importedTypes = expansion.moduleScope.importedTermSignatures
   private val context = ElaborationContext.module(expansion, this)
+
+  def establishedHeader: ElaboratedModuleHeader = {
+    val namespace = expansion.moduleScope.namespace
+    ElaboratedModuleHeader(
+      namespace,
+      expansion.signatures.filter(_._1.scope == namespace),
+      definitions.toList.flatMap { case (identifier, definition) => definition.knownType.map(identifier -> _) }.toMap,
+      dependencies
+    )
+  }
+
+  def completions(inspection: SourceInspection): List[CompletionSite] = {
+    inspection.completions(
+      expansion.moduleScope, importedTypes ++ establishedHeader.termSignatures, expansion.signatures
+    )
+  }
+
+  def elaborateModule: Result[ElaboratedModule, CpElaborationError] = {
+    elaborateAll.flatMap { elaborated =>
+      val annotated = definitions.collect {
+        case (identifier, definition) if definition.declaredType.nonEmpty => identifier
+      }.toSet
+      RecursiveDefinitions.lower(elaborated, annotated).map { lowered =>
+        ElaboratedModule(establishedHeader, lowered)
+      }
+    }
+  }
 
   override def typeOf(identifier: Identifier): ElaborationResult[Type] = definitions.get(identifier) match {
     case Some(definition) => definition.declaredType match {
@@ -130,6 +197,11 @@ private final class Definition(
   val declaredType: Option[Type]
 ) {
   private var state: DefinitionState = DefinitionState.Pending
+
+  def knownType: Option[Type] = declaredType.orElse(state match {
+    case DefinitionState.Complete(definition) => Some(definition.definitionType)
+    case _ => None
+  })
 
   def elaborate(context: ElaborationContext): ElaborationResult[ElaboratedTermDefinition] = state match {
     case DefinitionState.Complete(definition) => Result.Ok(definition)

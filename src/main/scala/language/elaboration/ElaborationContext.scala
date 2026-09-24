@@ -31,6 +31,12 @@ private[elaboration] final case class ElaborationContext private (
   globalTypes: GlobalTypeResolver,
   patternConstructorTypes: List[(String, Type)]
 ) {
+  def sourceBindings: List[(String, Type)] = {
+    localBindings.map(binding => binding.name -> binding.value.inferredType).distinctBy(_._1)
+  }
+
+  def inspection: Option[SourceInspection] = typeExpansion.inspection
+
   def resolveTerm(reference: NameReference): ElaborationResult[ElaboratedExpression] = {
     localTerm(reference) match {
       case Some(value) => Result.Ok(value)

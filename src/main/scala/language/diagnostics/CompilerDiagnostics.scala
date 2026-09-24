@@ -1,49 +1,47 @@
-package cp.tooling
+package cp.language.diagnostics
 
 import cp.fiobs.{ApplicableForm, CompilationError as FiobsCompilationError}
 import cp.fiobs.elaboration.{ElaborationError as FiobsElaborationError}
 import cp.fiobs.typing.TypeError
-import cp.fitrie.{FiTrieCompilationError, FiTrieMergeError, RouteKey}
-import cp.fitrie.elaboration.{CoercionError, FiTrieElaborationError}
 import cp.language.{Cp, CpCompilationError}
-import cp.language.compilation.{CpFiTrieCompilationError, CpSourceFile, IdentifiedSourceModule, ModuleSourceError}
+import cp.language.analysis.{DiagnosticPhase, DiagnosticSource, SourceDiagnostic}
+import cp.language.compilation.{CpSourceFile, IdentifiedSourceModule, ModuleSourceError}
 import cp.language.elaboration.*
 import cp.language.parser.ParsingError
-import cp.primitive.{PrimitiveType, PrimitiveValue}
 import cp.source.SourceSpan
 
-import scala.scalajs.js
-
-/** Human-readable compiler diagnostics, independent of LSP transport and client presentation. */
+/** Compiler-owned error descriptions. Clients need not inspect elaboration or target-language errors. */
 object CompilerDiagnostics {
-  def compilationIssue(error: CpCompilationError, sources: List[CpSourceFile]): js.Object = {
+  def describe(error: CpCompilationError, sources: List[CpSourceFile]): SourceDiagnostic = {
     val source = sourceFile(error, sources)
-    val range = error match {
+    val span = error match {
       case CpCompilationError.Parsing(_, ParsingError.Syntax(_, line, column)) =>
-        Some((line, column, line, column))
-      case _ =>
-        for {
-          file <- source
-          span <- sourceSpan(error)
-          resolved <- span.resolveIn(file.contents)
-        } yield (resolved.start.line, resolved.start.column, resolved.end.line, resolved.end.column)
+        source.flatMap(file => parsingPosition(file.contents, line, column))
+      case _ => sourceSpan(error)
     }
-    js.Dynamic.literal(
-      phase = (error match {
-        case CpCompilationError.Parsing(_, _) => "parse"
-        case _ => "compile"
-      }),
-      message = render(error),
-      fileName = source.fold[js.Any](null)(_.path.value),
-      line = range.fold[js.Any](null)(_._1),
-      column = range.fold[js.Any](null)(_._2),
-      endLine = range.fold[js.Any](null)(_._3),
-      endColumn = range.fold[js.Any](null)(_._4)
-    )
+    val phase = error match {
+      case CpCompilationError.Parsing(_, _) => DiagnosticPhase.Parsing
+      case _ => DiagnosticPhase.Checking
+    }
+    SourceDiagnostic(phase, render(error), source.map(file => DiagnosticSource(file.path, span)))
+  }
+
+  // RegexParsers reports one-based coordinates, with LF as the line separator. Preserve that
+  // convention here; clients convert the resulting UTF-16 offsets into their own coordinates.
+  private def parsingPosition(source: String, line: Int, column: Int): Option[SourceSpan] = {
+    var start = 0
+    var currentLine = 1
+    while (currentLine < line && start >= 0) {
+      val newline = source.indexOf('\n', start)
+      start = if (newline < 0) -1 else newline + 1
+      currentLine += 1
+    }
+    val offset = start + column - 1
+    Option.when(start >= 0 && offset >= 0 && offset <= source.length)(SourceSpan(offset, offset))
   }
 
   /** Preserve the compiler's source identity; diagnostics never infer a file from the message text. */
-  def sourceFile(error: CpCompilationError, sources: List[CpSourceFile]): Option[CpSourceFile] = {
+  private def sourceFile(error: CpCompilationError, sources: List[CpSourceFile]): Option[CpSourceFile] = {
     val path = error match {
       case CpCompilationError.Parsing(sourcePath, _) => sourcePath
       case CpCompilationError.Source(ModuleSourceError.InvalidSourceFileExtension(sourcePath)) => Some(sourcePath)
@@ -67,7 +65,7 @@ object CompilerDiagnostics {
     }
   }
 
-  def sourceSpan(error: CpCompilationError): Option[SourceSpan] = error match {
+  private def sourceSpan(error: CpCompilationError): Option[SourceSpan] = error match {
     case CpCompilationError.Elaboration(_, elaborationError) => elaborationError.location
     case _ => None
   }
@@ -85,16 +83,7 @@ object CompilerDiagnostics {
     case CpCompilationError.Elaboration(namespace, elaborationError) =>
       s"In module ${namespace.render}: ${renderCpElaborationError(elaborationError)}"
     case CpCompilationError.Fiobs(identifier, compilationError) =>
-      s"While checking ${identifier.render}: ${renderFiobsCompilationError(compilationError)}"
-  }
-
-  def render(error: CpFiTrieCompilationError): String = error match {
-    case CpFiTrieCompilationError.ModuleNotCompiled(namespace) =>
-      s"Module ${namespace.render} was not compiled."
-    case CpFiTrieCompilationError.EntryPointNotFound(identifier) =>
-      s"Entry point ${identifier.render} was not found. Define an ordinary `main` value."
-    case CpFiTrieCompilationError.Definition(identifier, compilationError) =>
-      s"While compiling ${identifier.render} to FiTrie: ${renderFiTrieCompilationError(compilationError)}"
+      s"While checking ${identifier.render}: ${render(compilationError)}"
   }
 
   private def renderModuleSourceError(error: ModuleSourceError): String = error match {
@@ -195,10 +184,10 @@ object CompilerDiagnostics {
     case TypeExpansionError.DuplicateSortParameter(name) => s"Sort parameter '$name' is declared more than once."
   }
 
-  private def renderFiobsCompilationError(error: FiobsCompilationError): String = error match {
+  def render(error: FiobsCompilationError): String = error match {
     case FiobsCompilationError.Elaboration(elaborationError) =>
       renderFiobsElaborationError(elaborationError)
-    case FiobsCompilationError.Typing(typeError) => renderTypeError(typeError)
+    case FiobsCompilationError.Typing(typeError) => render(typeError)
   }
 
   private def renderFiobsElaborationError(error: FiobsElaborationError): String = error match {
@@ -208,7 +197,7 @@ object CompilerDiagnostics {
       s"Type variable '$name' is not in scope.${availableNames(scope)}"
   }
 
-  private def renderTypeError(error: TypeError): String = error match {
+  def render(error: TypeError): String = error match {
     case TypeError.UnboundTermVariable(index) => s"Unbound Fiobs term variable x$index."
     case TypeError.UnboundGlobal(identifier) => s"Unknown global ${identifier.render}."
     case TypeError.IllFormedType(inputType) => s"Type ${inputType.render()} is not well formed."
@@ -229,78 +218,13 @@ object CompilerDiagnostics {
     case TypeError.TypeLambdaBoundMismatch(actualBound, expectedBound) =>
       s"Type-lambda bound ${actualBound.render()} does not match ${expectedBound.render()}."
     case TypeError.NoPrimitiveSignature(operator, _, candidates) =>
-      val causes = candidates.map(_.cause).distinct.map(renderTypeError).mkString(" ")
+      val causes = candidates.map(_.cause).distinct.map(render).mkString(" ")
       s"Operator '${operator.symbol}' does not accept these Fiobs operands. $causes"
-  }
-
-  private def renderFiTrieCompilationError(error: FiTrieCompilationError): String = error match {
-    case FiTrieCompilationError.SourceElaboration(elaborationError) =>
-      renderFiobsElaborationError(elaborationError)
-    case FiTrieCompilationError.TargetElaboration(elaborationError) =>
-      renderFiTrieElaborationError(elaborationError)
-  }
-
-  private def renderFiTrieElaborationError(error: FiTrieElaborationError): String = error match {
-    case FiTrieElaborationError.Typing(typeError) => renderTypeError(typeError)
-    case FiTrieElaborationError.Coercion(coercionError) => renderCoercionError(coercionError)
-    case FiTrieElaborationError.Merge(mergeError) => renderMergeError(mergeError)
-    case FiTrieElaborationError.UnboundDecoratedTermVariable(index) =>
-      s"Decorated term variable x$index is unbound."
-    case FiTrieElaborationError.UnboundDecoratedGlobal(identifier) =>
-      s"Decorated global ${identifier.render} is unavailable."
-    case FiTrieElaborationError.ExpectedArrow(_, actualType) =>
-      s"FiTrie application expected an arrow, but found ${actualType.render()}."
-    case FiTrieElaborationError.ExpectedUniversal(_, actualType) =>
-      s"FiTrie type application expected a universal type, but found ${actualType.render()}."
-    case FiTrieElaborationError.ExpectedRecursive(_, actualType) =>
-      s"FiTrie unfolding expected a recursive type, but found ${actualType.render()}."
-    case FiTrieElaborationError.ExpectedRecord(_, label, actualType) =>
-      s"FiTrie projection '$label' expected a record, but found ${actualType.render()}."
-    case FiTrieElaborationError.UnexpectedType(_, actualType, expectedType) =>
-      s"FiTrie elaboration produced ${actualType.render()}, but expected ${expectedType.render()}."
-    case FiTrieElaborationError.NoPrimitiveSignature(operator, leftType, rightType) =>
-      s"Operator '${operator.symbol}' has no signature for ${leftType.render()} and ${rightType.render()}."
-  }
-
-  private def renderCoercionError(error: CoercionError): String = error match {
-    case CoercionError.NotSubtype(sourceType, targetType) =>
-      s"Cannot coerce ${sourceType.render()} to ${targetType.render()}: it is not a subtype."
-    case CoercionError.Merge(mergeError) => renderMergeError(mergeError)
-  }
-
-  private def renderMergeError(error: FiTrieMergeError): String = error match {
-    case FiTrieMergeError.ConflictingTermination(route, primitiveType, leftPayload, rightPayload) =>
-      val routeDescription = if (route.isEmpty) "the root" else route.map(renderRoute).mkString(" / ")
-      s"Conflicting ${renderPrimitiveType(primitiveType)} results at $routeDescription: " +
-        s"${renderPrimitiveValue(leftPayload)} and ${renderPrimitiveValue(rightPayload)}."
-  }
-
-  private def renderRoute(routeKey: RouteKey): String = routeKey match {
-    case RouteKey.Application => "application"
-    case RouteKey.TypeApplication => "type application"
-    case RouteKey.Unfold => "unfolding"
-    case RouteKey.Projection(label) => s"projection ${label.value}"
   }
 
   private def applicableDescription(applicableForm: ApplicableForm): String = applicableForm match {
     case ApplicableForm.Arrow => "a function type"
     case ApplicableForm.Universal => "a polymorphic type"
-  }
-
-  private def renderPrimitiveType(primitiveType: PrimitiveType): String = primitiveType match {
-    case PrimitiveType.Integer => "Int"
-    case PrimitiveType.Decimal => "Decimal"
-    case PrimitiveType.Boolean => "Bool"
-    case PrimitiveType.Text => "String"
-    case PrimitiveType.Unit => "Unit"
-  }
-
-  private def renderPrimitiveValue(value: PrimitiveValue): String = value match {
-    case PrimitiveValue.Integer(number) => number.toString
-    case PrimitiveValue.Decimal(number) => number.toString
-    case PrimitiveValue.Boolean(boolean) => boolean.toString
-    case PrimitiveValue.Text(text) => s"\"$text\""
-    case PrimitiveValue.UnitValue => "()"
   }
 
   private def availableNames(names: List[String]): String = names.distinct match {

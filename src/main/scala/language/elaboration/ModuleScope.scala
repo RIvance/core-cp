@@ -43,6 +43,12 @@ private final case class NameBindings(
     if (identifier.scope == currentNamespace) current.get(identifier.name).contains(identifier)
     else importedIdentifiers.contains(identifier)
   }
+
+  def unqualifiedNames: Set[String] = current.keySet ++ explicitImports.keySet ++ wildcardImports.keySet
+
+  def qualifiedNames(namespace: Namespace): Set[String] = {
+    (current.valuesIterator ++ importedIdentifiers.iterator).filter(_.scope == namespace).map(_.name).toSet
+  }
 }
 
 /** Owns visibility, ambiguity, and kind checking for module names. */
@@ -75,6 +81,21 @@ final class ModuleScope private (
 
   def importedTypeDefinitions: Map[Identifier, SignatureDefinition] = {
     importedHeaders.valuesIterator.flatMap(_.typeDefinitions).toMap
+  }
+
+  /** Enumerates only names that ordinary lookup resolves uniquely with the requested spelling. */
+  def visibleNames(kind: NameKind, qualifier: Option[Namespace]): List[(String, Identifier)] = {
+    val bindings = kind match {
+      case NameKind.Term => terms
+      case NameKind.Type => types
+    }
+    val names = qualifier.fold(bindings.unqualifiedNames)(bindings.qualifiedNames)
+    names.toList.sorted.flatMap { name =>
+      val reference = qualifier.fold[NameReference](NameReference.Unqualified(name)) { namespace =>
+        NameReference.Qualified(namespace.identifier(name))
+      }
+      resolve(reference, kind).toOption.map(name -> _)
+    }
   }
 
   private def resolve(reference: NameReference, expected: NameKind): Result[Identifier, NameResolutionError] = {

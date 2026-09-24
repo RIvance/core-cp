@@ -12,7 +12,15 @@ private final case class ResolvedParameter(name: String, parameterType: Type)
 
 /** Type-directed CP elimination. All generated terms and inferred types already have lexical identities. */
 private[elaboration] final class ExpressionElaborator(context: ElaborationContext) {
-  def infer(expression: Expression): ElaborationResult[ElaboratedExpression] = expression match {
+  def infer(expression: Expression): ElaborationResult[ElaboratedExpression] = {
+    context.inspection.foreach(_.observeExpression(expression, context))
+    inferExpression(expression).map { elaborated =>
+      context.inspection.foreach(_.inferred(expression, elaborated.inferredType, context.typeScope))
+      elaborated
+    }
+  }
+
+  private def inferExpression(expression: Expression): ElaborationResult[ElaboratedExpression] = expression match {
     case Expression.Located(inner, sourceSpan) => infer(inner).mapError(_.at(sourceSpan))
 
     // ───────────────────────── E-Primitive       ───────────────── E-Top
@@ -259,7 +267,12 @@ private[elaboration] final class ExpressionElaborator(context: ElaborationContex
       )
   }
 
-  def check(expression: Expression, expectedType: Type): ElaborationResult[Term] = expression match {
+  def check(expression: Expression, expectedType: Type): ElaborationResult[Term] = {
+    context.inspection.foreach(_.observeExpression(expression, context))
+    checkExpression(expression, expectedType)
+  }
+
+  private def checkExpression(expression: Expression, expectedType: Type): ElaborationResult[Term] = expression match {
     case Expression.Located(inner, sourceSpan) => check(inner, expectedType).mapError(_.at(sourceSpan))
     // Δ ; Γ, x : A ⊢ E ⇐ B ↝ e
     // ───────────────────────────────── E-Abs

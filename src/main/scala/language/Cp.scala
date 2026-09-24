@@ -3,10 +3,12 @@ package cp.language
 import cp.fiobs.{CompilationError as FiobsCompilationError, CheckedProgram, Fiobs}
 import cp.fiobs.runtime.{GlobalEnvironment, Value}
 import cp.language.compilation.{CpSourceFile, IdentifiedSourceModule, ModuleSourceError, SourcePath}
+import cp.language.analysis.{SourceAnalysis, SourceDiagnostic}
+import cp.language.diagnostics.CompilerDiagnostics
 import cp.language.core.Module
 import cp.language.elaboration.*
 import cp.language.evaluation.{CpEvaluationError, CpEvaluator}
-import cp.language.parser.{CpParser, ParsingError}
+import cp.language.parser.{CpParser, ParsingError, SourceSyntax}
 import cp.naming.{Identifier, Namespace}
 import cp.util.{Graph, Result}
 
@@ -69,6 +71,43 @@ enum CpProgramError {
 object Cp {
   def parse(source: String): Result[Module, ParsingError] = {
     CpParser.parseModule(source)
+  }
+
+  /** Checks the supplied workspace without evaluation. Compilation currently reports its first failure. */
+  def check(sourceFiles: List[CpSourceFile]): List[SourceDiagnostic] = compileModules(sourceFiles) match {
+    case Result.Ok(_) => Nil
+    case Result.Err(error) => List(CompilerDiagnostics.describe(error, sourceFiles))
+  }
+
+  /**
+   * Inspects source using CP's normal parser, name resolution and elaboration. Failed definitions
+   * retain facts established before their error; analysis never compiles FiTrie or evaluates code.
+   */
+  def analyze(sourceFiles: List[CpSourceFile]): SourceAnalysis = {
+    val parsed = sourceFiles.map(parseSourceModule)
+    val diagnostics = parsed.collect { case Result.Err(error) => error }
+    val sources = parsed.collect { case Result.Ok(source) => source }
+    uniqueModules(sources.map(_._1)).flatMap { modules =>
+      moduleCompilationOrder(modules).map(order => modules -> order)
+    } match {
+      case Result.Err(error) =>
+        SourceAnalysis((diagnostics :+ error).map(CompilerDiagnostics.describe(_, sourceFiles)), Map.empty)
+      case Result.Ok((modules, order)) =>
+        val syntax = sources.map { case (source, syntax) => source.namespace -> syntax }.toMap
+        var headers = Map.empty[Namespace, ElaboratedModuleHeader]
+        var issues = diagnostics
+        val completions = order.map { namespace =>
+          val source = modules(namespace)
+          val imported = source.sourceModule.imports.map(_.targetNamespace).toSet
+          val report = CpElaborator.analyze(
+            source.sourceModule, namespace, headers.filter(entry => imported.contains(entry._1)), syntax(namespace)
+          )
+          report.header.foreach(header => headers = headers.updated(namespace, header))
+          report.error.foreach(error => issues = issues :+ CpCompilationError.Elaboration(namespace, error))
+          source.sourceFile.path -> report.completions
+        }.toMap
+        SourceAnalysis(issues.map(CompilerDiagnostics.describe(_, sourceFiles)), completions)
+    }
   }
 
   def elaborate(
@@ -145,15 +184,19 @@ object Cp {
     if (sourceFiles.isEmpty) {
       Result.Err(CpCompilationError.NoSourceModules)
     } else {
-      Result.traverse(sourceFiles) { sourceFile =>
-        CpParser.parseModuleWithSourceSpans(sourceFile.contents)
-          .mapError(error => CpCompilationError.Parsing(Some(sourceFile.path), error))
-          .flatMap { sourceModule =>
-            IdentifiedSourceModule.create(sourceFile, sourceModule)
-              .mapError(CpCompilationError.Source(_))
-          }
-      }
+      Result.traverse(sourceFiles)(parseSourceModule).map(_.map(_._1))
     }
+  }
+
+  private def parseSourceModule(
+    sourceFile: CpSourceFile
+  ): Result[(IdentifiedSourceModule, SourceSyntax), CpCompilationError] = {
+    CpParser.parseSource(sourceFile.contents)
+      .mapError(error => CpCompilationError.Parsing(Some(sourceFile.path), error))
+      .flatMap { parsed =>
+        IdentifiedSourceModule.create(sourceFile, parsed.module)
+          .mapError(CpCompilationError.Source(_)).map(_ -> parsed.syntax)
+      }
   }
 
   private def uniqueModules(

@@ -61,6 +61,4 @@ web-demo/web/test-results/
 web-demo/web/playwright-report/
 
 ### Language server ###
-language-server/node_modules/
-language-server/dist/
 language-server/scalajs/

@@ -19,7 +19,7 @@ npm run dev
 ```
 
 Setup builds the supplied IDE package in a separate generated directory and
-installs the application and language-server dependencies. It does not change
+installs the application dependencies. It does not change
 the supplied IDE checkout. Development builds the Scala.js compiler and
 language server, then starts Vite.
 
@@ -104,10 +104,15 @@ parse and type errors with source ranges. Errors without a source range appear
 in **Language service** messages; running also reports them in **Problems**.
 The compiler currently reports the first failing compilation error.
 
-The server advertises diagnostics and document synchronization. Completion,
-hover, rename, and symbol navigation are not implemented. It is a separate
-subproject with a stdio entry point as well as a worker entry point; neither
-depends on this demo or on the IDE package.
+The editor also receives semantic completion for parsed identifier prefixes,
+using inferred record fields, local bindings, type names, and imports. For
+example, typing record.fi can suggest field from the receiver's type.
+Completion after a parse failure is not yet available.
+
+The visualizer depends on the [CP language server](../language-server/README.md)
+as an LSP client. The server is pure Scala, compiled to Scala.js for its browser
+worker; it needs no backend service. A separate JVM stdio build serves desktop
+editors. Neither server target depends on this demo or the IDE package.
 
 ## Development and verification
 

@@ -1,86 +1,109 @@
 # CP language server
 
-This subproject exposes the existing CP compiler through LSP. It has no
-playground, editor, or web-demo dependency. Any LSP client can use the stdio
-server; browser clients can start the same server in a dedicated worker.
+The server is written in Scala and builds for the JVM and Scala.js. Both targets
+run the same document store, JSON-RPC session, diagnostics, and semantic
+completion code. Only their transports differ: JVM stdio uses Content-Length
+framing; the browser build receives and sends objects in a dedicated worker.
+The browser needs no backend service.
 
-The Scala.js `coreJS` project compiles the shared CP sources. This subproject
-depends on that compiler and adds source analysis and diagnostics. The server
-uses the compiler's module identities, import resolution, source spans, and
-type checker. It does not evaluate programs or change the CP core.
+The visualizer is a client of this server. The server has no dependency on the
+visualizer, playground, editor library, or FiTrie.
 
 ## Build and run
 
-With Java 21, sbt, and Node.js 24 installed, run from this directory:
+From the repository root, with Java 21 and sbt installed:
 
 ```sh
-npm ci
-npm run build
-npm start
+sbt languageServerJVM/assembly
+java -jar language-server/target/cp-language-server.jar --stdio
 ```
 
-`npm start` uses LSP framing on standard input and standard output. To configure
-an editor, invoke `node dist/main/typescript/node.js --stdio`. Standard output
-is reserved for the protocol.
+Configure a desktop editor to run that Java command. The executable reserves
+stdout for LSP messages and sends transport failures to stderr. It processes
+messages in arrival order and exits after the LSP shutdown/exit sequence,
+without waiting for the client to close stdin.
 
-For a browser worker, use the package's public entry point:
+For the browser build:
 
-```ts
-import { startBrowserLanguageServer } from "@core-cp/language-server/browser";
-startBrowserLanguageServer();
+```sh
+sbt languageServer/fullLinkJS
 ```
 
-The client owns the worker. Terminating it stops analysis and releases its
-workspace. The server does not require a particular client or worker library.
+The generated ES module is available through the npm package entry
+`@core-cp/language-server/browser`. Its `startBrowserLanguageServer` export starts
+the session in the current dedicated worker and returns a function that removes
+its message listener. The client owns the worker. The package manifest points
+directly to Scala.js output; there are no JavaScript or TypeScript server
+sources or runtime npm dependencies.
+
+## Compiler boundary
+
+`CpBackend` is the only adapter to CP. It calls the public `Cp.check` and
+`Cp.analyze` APIs with immutable source snapshots. The compiler returns
+diagnostic messages, source offsets, and completion candidates. Internal error
+variants, syntax trees, typing contexts, elaborated terms, and runtime
+representations stay inside the compiler.
+
+The LSP layer translates offsets to UTF-16 positions, filters completion labels
+by the typed prefix, and constructs replacement edits. It does not reconstruct
+scope or infer types. Compiler implementation changes that preserve this API
+need no corresponding server changes.
+
+The compiler owns diagnostic descriptions, so the visualizer's compilation API
+and the language server can report the same errors without sharing their
+transport or UI code.
 
 ## Source workspace
 
-The client synchronizes every CP source file needed for compilation, including
-imports whose editor tabs are closed. The server does not read files from disk.
-It accepts `didOpen`, full-document `didChange`, and `didClose`, and uses document
-URIs to preserve file identity. Closing a document removes it from the source
-workspace and rechecks its dependents.
+The client synchronizes every required CP source file, including imported files
+whose editor tabs are closed. The server does not discover files on disk. It
+accepts `didOpen`, full-document `didChange`, and `didClose`. Closing a document
+removes it from the source workspace and rechecks its dependents. Older versions
+cannot replace accepted text, and malformed change batches leave the document
+intact.
 
-For example, a client can synchronize `Application.cp` and `lib/Library.cp`:
+URI identity is preserved in responses. Source filenames still determine
+implicit CP module names; folders do not introduce namespaces. Explicit module
+declarations and imports use the normal compiler rules.
+
+Compilation never evaluates code. Diagnostics include document versions, and
+successful rechecks clear earlier errors. The compiler currently stops at its
+first compilation error. An issue with no source span is sent as a
+`window/logMessage` notification.
+
+## Completion
+
+Completion uses the compiler's lexical bindings, import resolution and inferred
+receiver types. For example, at the end of:
 
 ```cp
-// Application.cp
-import Library::*
-def main: Int = answer
+def result(record: { field: Int; file: String }) = record.fi
 ```
 
-```cp
-// lib/Library.cp
-def answer: Int = 42
-```
+the server proposes `field: Int` and `file: String`. Selecting one replaces the
+entire existing name, including any suffix after the cursor. A surrounding
+expected type does not remove candidates: the selected name may begin a longer
+expression.
 
-Changing `answer` to `1 ,, 2` produces a type error located in `Library.cp`.
-Correcting it replaces that file's diagnostics with an empty list. Removing the
-library reports the unresolved import. Folder names do not change CP namespaces;
-explicit `module` declarations work as usual.
+Parameters, inferred let bindings, fields introduced by `open`, and module
+imports follow ordinary CP shadowing and ambiguity rules. Qualified names only
+expose authorized modules. Intersected record fields use CP's projection types;
+recursive records require explicit `unfold`. Type-name completion includes
+in-scope type parameters and established signatures.
 
-## Supported protocol features
-
-The server advertises full-document synchronization and UTF-16 positions. It
-publishes versioned parse and type diagnostics and clears obsolete diagnostics
-after changes or closures. Older document versions cannot overwrite accepted
-source. Compilation checks the workspace but never evaluates it, so a well-typed
-recursive program need not terminate for analysis to finish.
-
-The compiler currently stops at its first error. Errors with source spans become
-LSP diagnostics. Module-level errors without spans use `window/logMessage`;
-the server does not assign them an invented token range.
-
-Completion, hover, definitions, references, rename, formatting, and symbol
-queries are not advertised. Adding one requires a corresponding compiler-backed
-analysis operation; lexical guesses are not substitutes for type information.
+Analysis retains facts established before an elaboration error, including the
+unknown name being completed. It currently requires a syntactically complete
+module: `record.fi` can be queried, while `record.` and unfinished expressions
+cannot. Names whose types have not been established are omitted. Hover,
+navigation, rename, formatting, and symbol queries are not advertised.
 
 ## Tests
 
 ```sh
-npm test
+sbt ";languageServerJVM/test;languageServer/test"
 ```
 
-The tests launch the actual stdio process and communicate through LSP. They
-cover initialization, imports, Unicode ranges, source versions, closing files,
-diagnostic clearing, and shutdown. They require no web server or IDE package.
+The shared suite runs on both targets. Additional Scala tests exercise the
+actual JVM process and the Scala.js worker adapter, including framing, UTF-8,
+UTF-16 coordinates, lifecycle errors, source versions, imports, diagnostic
+clearing, and semantic completion. None require the visualizer or playground.

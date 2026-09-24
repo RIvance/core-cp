@@ -7,10 +7,16 @@ import cp.language.evaluation.CpEvaluator
 import cp.language.{CompiledCpModule, CompiledCpProgram, Cp, CpCompilationError}
 import cp.primitive.{BinaryOperator, PrimitiveType, PrimitiveValue}
 import cp.util.Result
-import cp.tooling.{CompilerDiagnostics, CompilerSourceFile}
+import cp.language.diagnostics.CompilerDiagnostics
 
 import scala.scalajs.js
 import scala.scalajs.js.annotation.{JSExport, JSExportTopLevel}
+
+@js.native
+trait CompilerSourceFile extends js.Object {
+  val fileName: String = js.native
+  val source: String = js.native
+}
 
 /** Browser-owned facade over CP compilation and immutable FiTrie sessions. */
 @JSExportTopLevel("CpTrieWorkbench")
@@ -69,7 +75,7 @@ final class BrowserApi {
     case Some((program, module)) =>
       clearSession()
       CpFiTrieCompiler.compile(program, module.namespace) match {
-        case Result.Err(error) => failure("FiTrie", CompilerDiagnostics.render(error))
+        case Result.Err(error) => failure("FiTrie", FiTrieDiagnostics.render(error))
         case Result.Ok(compiled) =>
           Evaluation.start(compiled.entry, compiled.globalEnvironment).flatMap { session =>
             advanceToVisibleState(
@@ -175,7 +181,22 @@ final class BrowserApi {
   }
 
   private def compilationFailure(error: CpCompilationError, sources: List[CpSourceFile]): js.Object = {
-    js.Dynamic.literal(ok = false, error = CompilerDiagnostics.compilationIssue(error, sources))
+    val issue = CompilerDiagnostics.describe(error, sources)
+    val range = for {
+      location <- issue.source
+      file <- sources.find(_.path == location.path)
+      span <- location.span
+      resolved <- span.resolveIn(file.contents)
+    } yield resolved
+    js.Dynamic.literal(ok = false, error = js.Dynamic.literal(
+      phase = issue.phase.label,
+      message = issue.message,
+      fileName = issue.source.fold[js.Any](null)(_.path.value),
+      line = range.fold[js.Any](null)(_.start.line),
+      column = range.fold[js.Any](null)(_.start.column),
+      endLine = range.fold[js.Any](null)(_.end.line),
+      endColumn = range.fold[js.Any](null)(_.end.column)
+    ))
   }
 
   private def failure(phase: String, message: String): js.Object = js.Dynamic.literal(
