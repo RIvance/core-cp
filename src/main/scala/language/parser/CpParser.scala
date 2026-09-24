@@ -20,7 +20,31 @@ enum ParsingError {
  * combinators may return transient tuples and constructor functions, but no
  * surface-language AST exists.
  */
-object CpParser extends RegexParsers {
+object CpParser {
+  def parseModule(source: String): Result[Module, ParsingError] = {
+    parseModuleWithSourceSpans(source).map(_.withoutSourceSpans)
+  }
+
+  private[language] def parseModuleWithSourceSpans(source: String): Result[Module, ParsingError] = {
+    parseSource(source).map(_.module)
+  }
+
+  private[language] def parseSource(source: String): Result[ParsedSource, ParsingError] = {
+    new ModuleParser().parseSource(source)
+  }
+
+  /** Whether this source spelling denotes a reference, accounting for the grammar's built-in types. */
+  private[language] def isUnqualifiedTypeReference(name: String): Boolean = {
+    new ModuleParser().isUnqualifiedTypeReference(name)
+  }
+}
+
+/** Occurrence metadata belongs to one parse, including its speculative grammar branches. */
+private final class ModuleParser extends RegexParsers {
+  private val syntax = new SourceSyntax
+
+  private final case class ParsedReference(reference: NameReference, site: NameSite)
+
   private enum LocalBindingKind {
     case Ordinary, Recursive
   }
@@ -100,13 +124,9 @@ object CpParser extends RegexParsers {
     "where"
   )
 
-  def parseModule(source: String): Result[Module, ParsingError] = {
-    parseModuleWithSourceSpans(source).map(_.withoutSourceSpans)
-  }
-
-  private[language] def parseModuleWithSourceSpans(source: String): Result[Module, ParsingError] = {
+  def parseSource(source: String): Result[ParsedSource, ParsingError] = {
     parseAll(compilationUnit, source) match {
-      case Success(module, _) => Result.Ok(module)
+      case Success(module, _) => Result.Ok(ParsedSource(module, syntax))
       case failure: NoSuccess =>
         Result.Err(ParsingError.Syntax(
           failure.msg,
@@ -114,6 +134,11 @@ object CpParser extends RegexParsers {
           failure.next.pos.column
         ))
     }
+  }
+
+  def isUnqualifiedTypeReference(name: String): Boolean = parseAll(inputType, name) match {
+    case Success(TypeSyntax.Reference(NameReference.Unqualified(_)), _) => true
+    case _ => false
   }
 
   private def compilationUnit: Parser[Module] = {
@@ -457,8 +482,12 @@ object CpParser extends RegexParsers {
 
   private def namedType: Parser[TypeSyntax] = {
     nameReference ~ opt("<" ~> rep1sep(sortArgument, ",") <~ ">") ^^ {
-      case reference ~ Some(arguments) => TypeSyntax.SignatureApplication(reference, arguments)
-      case reference ~ None => TypeSyntax.Reference(reference)
+      case parsed ~ arguments =>
+        val inputType = arguments match {
+          case Some(arguments) => TypeSyntax.SignatureApplication(parsed.reference, arguments)
+          case None => TypeSyntax.Reference(parsed.reference)
+        }
+        syntax.withType(inputType, parsed.site)
     }
   }
 
@@ -737,8 +766,10 @@ object CpParser extends RegexParsers {
   }
 
   private def projectionSuffix: Parser[Expression => Expression] = {
-    "." ~> identifier ^^ { label =>
-      (record: Expression) => Expression.Projection(record, label)
+    "." ~> spanned(identifier) ^^ { case (label, span) =>
+      (record: Expression) => syntax.withSelection(
+        Expression.Projection(record, label), record, NameSite(span, None)
+      )
     }
   }
 
@@ -750,21 +781,23 @@ object CpParser extends RegexParsers {
       booleanLiteral |
       textLiteral |
       ("top" ^^^ Expression.Top) |
-      ("self" ^^^ Expression.variable("self")) |
-      ("super" ^^^ Expression.variable("super")) |
-      (nameReference ^^ Expression.Variable.apply) |
+      (spanned("self" | "super") ^^ { case (name, span) =>
+        syntax.withTerm(Expression.variable(name), NameSite(span, None))
+      }) |
+      (nameReference ^^ { parsed => syntax.withTerm(Expression.Variable(parsed.reference), parsed.site) }) |
       ("(" ~> expression <~ ")")
   }
 
-  private def nameReference: Parser[NameReference] = {
-    identifier ~ rep("::" ~> identifier) ^^ {
-      case name ~ Nil => NameReference.Unqualified(name)
-      case firstSegment ~ remainingSegments =>
-        val completeSegments = firstSegment :: remainingSegments
-        NameReference.Qualified(Identifier(
-          Namespace.from(completeSegments.init),
-          completeSegments.last
-        ))
+  private def nameReference: Parser[ParsedReference] = {
+    spanned(identifier) ~ rep("::" ~> spanned(identifier)) ^^ {
+      case (name, span) ~ Nil => ParsedReference(NameReference.Unqualified(name), NameSite(span, None))
+      case first ~ remaining =>
+        val segments = first :: remaining
+        val namespace = Namespace.from(segments.init.map(_._1))
+        ParsedReference(
+          NameReference.Qualified(Identifier(namespace, segments.last._1)),
+          NameSite(segments.last._2, Some(namespace))
+        )
     }
   }
 
@@ -916,6 +949,15 @@ object CpParser extends RegexParsers {
           case failure: NoSuccess => failure
         }
       }
+    }
+  }
+
+  private def spanned[A](parser: => Parser[A]): Parser[(A, SourceSpan)] = new Parser[(A, SourceSpan)] {
+    override def apply(input: Input): ParseResult[(A, SourceSpan)] = parser(input) match {
+      case Success(value, next) =>
+        val start = handleWhiteSpace(input.source, input.offset)
+        Success(value -> SourceSpan(start, next.offset), next)
+      case failure: NoSuccess => failure
     }
   }
 

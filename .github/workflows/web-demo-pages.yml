@@ -42,8 +42,8 @@ jobs:
       - name: Test Scala.js integration
         run: npm run test:integration
 
-      - name: Test language server
-        run: npm --prefix ../../language-server test
+      - name: Test compiler and both language-server targets
+        run: cd ../.. && sbt ";root/Test/testFull;languageServerJVM/test;languageServer/test;languageServerJVM/assembly"
 
       - name: Test web demo
         run: npm test

@@ -68,6 +68,20 @@ test("executes the selected entry while editing an imported file and publishes l
   await expect(page.getByRole("button", { name: "Language service ready" })).toBeVisible();
 });
 
+test("offers typed record fields through the Scala.js language-server worker", async ({ page }) => {
+  await replaceSource(page, 'def main = { field = 42; file = "text" }.fi');
+  await page.keyboard.press("Control+Space");
+  const suggestions = page.locator(".suggest-widget.visible");
+  await expect(suggestions).toBeVisible();
+  await expect(suggestions.getByText("field", { exact: true })).toBeVisible();
+  await expect(suggestions.getByText("file", { exact: true })).toBeVisible();
+  await suggestions.getByText("field", { exact: true }).click();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".view-lines")).toContainText(".field");
+  await page.getByRole("button", { name: /^Run/ }).click();
+  await expect(page.getByTestId("execution-value")).toHaveText("↳42");
+});
+
 test("stops long runs and enforces the execution time limit", async ({ page }) => {
   await replaceSource(page, `def fibonacci(n: Int): Int =
   if n < 2 then 1 else fibonacci(n - 1) + fibonacci(n - 2)

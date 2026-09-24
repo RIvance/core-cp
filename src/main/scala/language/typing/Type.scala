@@ -101,6 +101,9 @@ enum Type {
 
   def render: String = diagnosticSyntax(Nil).render
 
+  /** Presents free variables with their enclosing source binder names, innermost first. */
+  def renderIn(typeParameterNames: List[String]): String = diagnosticSyntax(typeParameterNames).render
+
   /** One explicit unfolding: U(μ α. A) = A[α ↦ μ α. A]. */
   def unfolded: Option[Type] = this match {
     case Recursive(body) => Some(body.substituteBinders(List(this)))
